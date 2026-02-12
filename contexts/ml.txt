@@ -1,0 +1,5 @@
+所有深度学习任务必须使用 GPU 加速：
+- device = "cuda" + model.to("cuda")
+- dtype = torch.bfloat16
+- torch.compile(model) + torch.inference_mode()
+- torch.backends.cuda.matmul.allow_tf32 = True

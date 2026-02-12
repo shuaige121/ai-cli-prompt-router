@@ -1,0 +1,2 @@
+Deck/PPT 制作工具：~/Desktop/deck-maker/
+使用方法：阅读 ~/Desktop/deck-maker/skill.md 获取完整指令，按其流程执行。

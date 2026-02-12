@@ -1,0 +1,5 @@
+代码规范：
+- 命名: 函数/变量 snake_case，类 PascalCase，常量 UPPER_CASE
+- Python 使用 type hints，TypeScript 严格模式
+- 格式化: Python ruff/black，JS/TS prettier
+- 只在复杂逻辑处加注释
