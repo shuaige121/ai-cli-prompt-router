@@ -1,791 +1,496 @@
-# OpenClaw v2 — 全平台多机 AI 控制中心 架构设计
+# OpenClaw v2 — 多机远程终端控制中心
 
-## 总览
+## 核心洞察
 
-从单机 Electron GUI 重构为 **多平台、多机器、多 LLM** 的分布式 AI 开发控制中心。
+所有功能的底层就一个东西：**可认证的远程 PTY (伪终端)**。
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                    Controller UI                      │
-│  (iOS / Android / Windows / Mac / Linux / Web)       │
-│  看到所有机器 · 发指令 · 看状态 · 切换 LLM           │
-└──────────────┬───────────────────────┬───────────────┘
-               │ WebSocket/P2P         │
-       ┌───────▼───────┐       ┌───────▼───────┐
-       │  Main Server   │◄─────►│  Main Server   │
-       │  (Rendezvous)  │       │  (Relay 备用)  │
-       └───────┬───────┘       └───────────────┘
-               │ heartbeat + signaling
-    ┌──────────┼──────────┬──────────────┐
-    ▼          ▼          ▼              ▼
-┌────────┐┌────────┐┌────────┐    ┌────────┐
-│ Agent  ││ Agent  ││ Agent  │... │ Agent  │
-│ Win PC ││Mac Mini││Linux   │    │ GPU    │
-│        ││        ││Server  │    │ Server │
-└────────┘└────────┘└────────┘    └────────┘
- 每个 Agent:
- - 上报 CPU/GPU/RAM/VRAM/磁盘
- - 执行 LLM 指令 (Claude/GPT/Ollama/...)
- - 自动建立 SSH 互联
- - 支持 WOL 被唤醒
- - 任何 Agent 输入管理密码可升级为 Controller
+LLM 对话    = 终端里跑 claude / ollama run / curl api
+系统监控    = 终端里跑 top / nvidia-smi / df -h → parse
+SSH 互联    = 终端里跑 ssh-keygen + ssh-copy-id
+WOL 唤醒    = 终端里跑 wakeonlan / etherwake
+项目状态    = 终端里跑 git status / git log
+安装软件    = 终端里跑 apt install / brew install
+任何操作    = 终端里跑任何命令
+```
+
+不搞花架子，不给每个功能写独立模块。
+底层做好一个远程终端，上层全是 "跑个命令然后 parse 输出"。
+
+---
+
+## 架构：3 层，6 个模块
+
+```
+┌──────────────────────────────────────────────────┐
+│                  UI Layer                         │
+│  Controller 面板 (Web/Electron/RN)               │
+│  多机列表 · 终端窗口 · 状态卡片 · LLM 对话       │
+└──────────────────┬───────────────────────────────┘
+                   │ WebSocket
+┌──────────────────▼───────────────────────────────┐
+│              Relay Layer                          │
+│  Rendezvous Server (发现 + 信令 + 中继)           │
+│  RustDesk 模式: LAN直连 > 打洞 > Relay           │
+└──────────────────┬───────────────────────────────┘
+                   │ WebSocket + heartbeat
+┌──────────────────▼───────────────────────────────┐
+│              Agent Layer                          │
+│  每台机器跑一个 daemon                            │
+│  核心能力 = 认证 + 开 PTY + 流式 I/O             │
+│  附加能力 = 心跳上报 (自动跑采集命令)             │
+└──────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 模块划分 & Manager 分工
+## Module 1: Agent Daemon — 远程 PTY 服务
 
-### Manager A: 网络层 (Network Manager)
+**这是整个系统的基石。做好这一个，其他全是上层。**
 
-**职责**: 所有节点的发现、连接、通信基础设施
-
-#### Contract A1: Rendezvous Server (信令服务器)
 ```
-输入: 无（独立服务）
-输出: 可运行的信令+中继服务器
-
-技术栈: Node.js + ws + protobuf (或 msgpack)
-端口:
-  - 21116/UDP: Agent 心跳注册
-  - 21116/TCP: 连接协商
-  - 21117/TCP: 中继转发
-  - 21118/TCP: WebSocket (给 Web/移动端)
-
-核心功能:
-  1. PeerRegistry
-     - 每个 Agent 每 15s 发送心跳: { id, ip, port, nat_type, timestamp }
-     - 30s 无心跳标记 offline
-     - 持久化到 SQLite (peer_id, public_key, last_seen, meta)
-
-  2. ConnectionBroker
-     - Controller 请求连接 Agent B
-     - 查找 B 的地址和 NAT 类型
-     - 决定连接策略: LAN直连 > UDP打洞 > TCP打洞 > Relay
-     - 下发连接指令给双方
-
-  3. RelayForwarder
-     - 当 P2P 失败时，双方连到 Relay
-     - 按 sessionUUID 配对
-     - 双向转发字节流（加密后的）
-
-  4. WOL Proxy
-     - Controller 发 WOL 请求指定 MAC
-     - Server 找到同子网在线的 Agent
-     - 命令该 Agent 本地发送 magic packet
-
-文件结构:
-  server/
-    src/
-      index.ts              # 入口
-      registry.ts           # PeerRegistry: 心跳、在线状态
-      broker.ts             # ConnectionBroker: 连接策略决策
-      relay.ts              # RelayForwarder: 中继转发
-      wol.ts                # WOL proxy 逻辑
-      protocol.ts           # 消息定义 (protobuf/msgpack schema)
-      db.ts                 # SQLite 持久化
-    package.json
-    Dockerfile
-
-QA 检查点:
-  □ 100 个模拟 Agent 心跳注册，查询延迟 < 5ms
-  □ Agent 掉线 30s 后正确标记 offline
-  □ LAN 内两个 Agent 能直连不走 Relay
-  □ NAT 后的 Agent 能通过 Relay 通信
-  □ WOL magic packet 正确发送
-  □ 并发 50 个 Relay session 无内存泄漏
+agent/
+  src/
+    index.ts          # 入口：启动 + 连接 server
+    pty.ts            # 核心：node-pty 开终端，流式 I/O
+    auth.ts           # 认证：token 验证，角色检查
+    heartbeat.ts      # 心跳：定期跑采集命令，上报 JSON
+    platform.ts       # 平台适配：安装为系统服务
+  package.json        # 依赖: node-pty, ws, msgpack
 ```
 
-#### Contract A2: Agent Daemon (节点守护进程)
-```
-输入: server 地址 + agent 密钥
-输出: 各平台可安装的后台服务
+### pty.ts — 核心 50 行逻辑
 
-技术栈: Node.js (跨平台一致性，后续可选 Rust 重写热路径)
+```typescript
+// 伪代码，展示核心有多简单
+import { spawn } from "node-pty";
 
-核心功能:
-  1. ServerLink
-     - 启动时连接 Rendezvous Server
-     - 15s 心跳维持在线
-     - 断线自动重连 (指数退避 1s→30s)
-     - 上报本机 NAT 类型
+function createSession(ws, { cols, rows, cwd, cmd }) {
+  const shell = cmd || process.env.SHELL || "bash";
+  const pty = spawn(shell, [], { cols, rows, cwd });
 
-  2. PeerConnect
-     - 接受 Server 下发的连接指令
-     - 执行 UDP/TCP 打洞
-     - 打洞失败自动 fallback 到 Relay
-     - 所有数据 NaCl 加密
+  // PTY stdout → WebSocket
+  pty.onData((data) => ws.send(msgpack.encode({ t: "o", d: data })));
 
-  3. SystemMonitor
-     - 每 5s 采集一次:
-       CPU: 使用率、核心数、型号、温度
-       GPU: 使用率、型号、VRAM 已用/总量、温度 (nvidia-smi / rocm-smi)
-       RAM: 已用/总量
-       Disk: 各挂载点 已用/总量
-       Network: 上下行速率
-       OS: 平台、版本、hostname
-     - 通过心跳附带发送
+  // WebSocket → PTY stdin
+  ws.on("message", (raw) => {
+    const msg = msgpack.decode(raw);
+    if (msg.t === "i") pty.write(msg.d);        // input
+    if (msg.t === "r") pty.resize(msg.c, msg.r); // resize
+  });
 
-  4. CommandExecutor
-     - 接收 Controller 下发的 LLM 指令
-     - 调用配置的 LLM backend (见 Manager D)
-     - 流式回传结果
-     - 支持中断执行
-
-  5. SSHMesh (可选开关)
-     - 首次启动生成 ed25519 keypair
-     - 公钥注册到 Server
-     - 收到新 peer 加入通知时:
-       获取对方公钥 → 写入 ~/.ssh/authorized_keys
-       写入 ~/.ssh/config: Host openclaw-{peer_id}
-     - 用户可在设置中开关此功能
-
-  6. WOLResponder
-     - 监听来自 Server 的 WOL 指令
-     - 构造 magic packet 广播到本地子网
-
-  7. RoleSwitch
-     - 默认角色: controlled (被控)
-     - 输入管理密码后升级为 controller
-     - controller 能看到所有 agent 的完整状态和控制面板
-
-平台适配:
-  Windows: 注册为 Windows Service (node-windows) 或开机启动项
-  macOS: LaunchAgent plist
-  Linux: systemd unit file
-
-文件结构:
-  agent/
-    src/
-      index.ts              # 入口，启动各模块
-      link.ts               # ServerLink: 心跳、重连
-      connect.ts            # PeerConnect: P2P/Relay
-      monitor.ts            # SystemMonitor: 硬件采集
-      executor.ts           # CommandExecutor: LLM 指令执行
-      ssh-mesh.ts           # SSHMesh: 自动 SSH 互信
-      wol.ts                # WOL 响应
-      role.ts               # 角色管理 (controlled/controller)
-      platform/
-        win-service.ts      # Windows 服务注册
-        mac-launchagent.ts  # macOS LaunchAgent
-        linux-systemd.ts    # Linux systemd
-    package.json
-
-QA 检查点:
-  □ Agent 启动后 3s 内注册到 Server
-  □ 断网恢复后 30s 内自动重连
-  □ CPU/RAM 采集误差 < 5%
-  □ GPU 采集在无 NVIDIA 机器上 graceful fallback
-  □ SSH 公钥交换后双向 ssh 可达
-  □ WOL 发送后用 tcpdump 确认 magic packet
-  □ 指令执行流式输出延迟 < 100ms
-  □ Windows/Mac/Linux 三平台服务安装卸载正常
+  pty.onExit(() => ws.send(msgpack.encode({ t: "x" })));
+  ws.on("close", () => pty.kill());
+}
 ```
 
-#### Contract A3: P2P 通信协议
+就这么多。一个真正的终端，支持 vim/tmux/htop/任何交互式程序。
+不是 `exec` 跑命令然后拼字符串，是真 PTY。
+
+### heartbeat.ts — 系统状态 = 跑命令
+
+```typescript
+// 不写采集模块，直接跑命令 parse
+async function collectStats() {
+  const cpu = await exec("top -bn1 | head -5");    // 或 /proc/stat
+  const gpu = await exec("nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits").catch(() => null);
+  const ram = { total: os.totalmem(), free: os.freemem() };
+  const disk = await exec("df -h --output=target,size,used,avail,pcent | tail -n+2");
+  const hostname = os.hostname();
+  const platform = `${os.platform()} ${os.arch()} ${os.release()}`;
+
+  return { cpu, gpu, ram, disk, hostname, platform, ts: Date.now() };
+}
+
+// 每 10s 发一次
+setInterval(() => server.send(msgpack.encode({ t: "hb", stats: collectStats() })), 10000);
 ```
-输入: 无
-输出: 共享协议库 @openclaw/protocol
 
-消息类型 (protobuf 或 msgpack):
+无 GPU？`nvidia-smi` catch 掉就完了。无需 "graceful fallback 模块"。
 
-// ---- 注册层 ----
-RegisterPeer     { id, pub_key, nat_type, system_info, timestamp }
-Heartbeat        { id, system_stats, timestamp }
-PeerOffline      { id }
+### QA
 
-// ---- 连接层 ----
-ConnectRequest   { from_id, to_id, session_uuid }
-ConnectResponse  { session_uuid, strategy: "lan"|"punch"|"relay", addrs }
-PunchHole        { target_addr, session_uuid }
-RelayJoin        { session_uuid }
-
-// ---- 控制层 ----
-LLMRequest       { session_id, provider, model, message, cwd, stream: bool }
-LLMChunk         { session_id, data }
-LLMDone          { session_id, result, error, usage }
-LLMStop          { session_id }
-
-// ---- 系统层 ----
-SystemStats      { cpu, gpu[], ram, disk[], network, os_info }
-WOLRequest       { target_mac, subnet }
-SSHKeyExchange   { peer_id, public_key }
-
-// ---- 角色层 ----
-AuthRequest      { password_hash }
-AuthResponse     { ok, role: "controller"|"controlled", token }
-RoleChange       { peer_id, new_role }
-
-QA 检查点:
-  □ 所有消息类型有 encode/decode 测试
-  □ 未知消息类型不导致 crash
-  □ 消息大小合理 (心跳 < 1KB，stats < 4KB)
-  □ 版本兼容性: v1 client 能连 v2 server (graceful)
+```
+□ Agent 启动，连上 Server，心跳正常
+□ Controller 连上 Agent，打开终端，能跑 vim
+□ 终端 resize 正确
+□ 断网重连后终端 session 还在（可选：tmux attach）
+□ nvidia-smi 不存在不 crash
+□ Windows / Mac / Linux 三平台 node-pty 编译通过
 ```
 
 ---
 
-### Manager B: UI 层 (UI Manager)
+## Module 2: Relay Server — 发现 + 信令 + 中继
 
-**职责**: 全平台统一 UI，Controller 控制面板
-
-#### Contract B1: 共享 UI 框架选型 & 基础组件
 ```
-技术选型:
-  React Native + Expo  → iOS / Android
-  Electron + React     → Windows / Mac / Linux
-  Web (React)          → 浏览器直接访问
-
-  共享代码比例目标: 90%+ (除平台 native 模块)
-
-  替代方案:
-    Capacitor + React → 也能覆盖全平台，但 native 体验略差
-    选择 RN 因为移动端体验更好
-
-项目结构:
-  ui/
-    packages/
-      shared/              # 共享组件和逻辑 (90% 代码在这)
-        src/
-          components/       # UI 组件
-          hooks/            # React hooks
-          stores/           # 状态管理 (zustand)
-          api/              # 与 Agent/Server 通信
-          theme/            # 主题系统 (dark/light)
-          i18n/             # 中英文
-      mobile/              # React Native (Expo)
-        app/
-        ios/
-        android/
-      desktop/             # Electron + React
-        main/
-        renderer/
-      web/                 # Vite React 纯 Web 版
-
-QA 检查点:
-  □ shared 组件在 3 个平台渲染一致
-  □ 主题切换无闪烁
-  □ 中英文切换覆盖所有文案
+server/
+  src/
+    index.ts          # 入口
+    registry.ts       # 在线 Agent 注册表 (内存 Map + SQLite 持久化)
+    broker.ts         # 连接协商 (LAN > punch > relay)
+    relay.ts          # 中继转发 (两个 WS 对接，pipe bytes)
+    wol.ts            # WOL: 找同子网 Agent 代发 magic packet
+  package.json
+  Dockerfile
 ```
 
-#### Contract B2: Controller 面板 — 机器列表 & 状态总览
-```
-页面: /dashboard (主页)
+### registry.ts — 就一个 Map
 
-布局:
-  ┌─────────────────────────────────────────────┐
-  │ OpenClaw    [搜索]    [+添加机器]    [设置] │
-  ├─────────────────────────────────────────────┤
-  │                                             │
-  │  ┌─────────┐  ┌─────────┐  ┌─────────┐    │
-  │  │ Win PC  │  │Mac Mini │  │ GPU Box │    │
-  │  │ ● online│  │ ● online│  │ ○ sleep │    │
-  │  │         │  │         │  │         │    │
-  │  │CPU 23%  │  │CPU 45%  │  │ [唤醒]  │    │
-  │  │RAM 8/16 │  │RAM 12/32│  │         │    │
-  │  │GPU 0%   │  │GPU --   │  │RTX 4090 │    │
-  │  │VRAM --  │  │         │  │VRAM 0/24│    │
-  │  │SSD 45%  │  │SSD 67%  │  │SSD 12%  │    │
-  │  │         │  │         │  │         │    │
-  │  │ 2 tasks │  │ idle    │  │         │    │
-  │  └─────────┘  └─────────┘  └─────────┘    │
-  │                                             │
-  │  总资源: CPU 24核 · RAM 72GB · GPU 3张      │
-  │          VRAM 48GB · 磁盘 2.4TB             │
-  └─────────────────────────────────────────────┘
+```typescript
+const peers = new Map<string, {
+  id: string,
+  ws: WebSocket,
+  ip: string,
+  nat: string,
+  stats: SystemStats,  // 最近一次心跳的数据
+  lastSeen: number,
+  subnet: string,      // 用于 WOL 和 LAN 判断
+}>();
 
-卡片组件 MachineCard:
-  - 实时更新 (WebSocket push，5s 刷新)
-  - 点击进入该机器详情
-  - 长按/右键: 唤醒、SSH、重启 Agent
-  - 离线机器灰色显示，有 WOL 按钮
-  - 新加入机器有呼吸灯动画
-
-顶部聚合状态栏:
-  - 在线机器数 / 总机器数
-  - 总 CPU 核心、总 RAM、总 GPU、总 VRAM
-  - 活跃任务数
-
-QA 检查点:
-  □ 10 台机器卡片列表渲染 < 16ms (60fps)
-  □ 机器上下线状态 3s 内刷新
-  □ WOL 按钮点击后显示 "唤醒中..." 反馈
-  □ 离线机器排到末尾
-  □ 移动端横竖屏适配
+// Agent 心跳进来 → 更新 Map
+// Controller 查询 → 返回 peers 列表
+// 30s 没心跳 → 标记 offline
 ```
 
-#### Contract B3: 单机详情 & AI 对话界面
-```
-页面: /machine/:id
+### relay.ts — 最简中继
 
-布局:
-  ┌─────────────────────────────────────────┐
-  │ ← Win PC                    [SSH] [设置]│
-  ├────────┬────────────────────────────────┤
-  │ 状态   │ AI 对话                        │
-  │        │                                │
-  │ CPU    │ ┌─ user ──────────────────┐   │
-  │ ██░░   │ │ 帮我优化这个函数        │   │
-  │ 34%    │ └─────────────────────────┘   │
-  │        │                                │
-  │ RAM    │ ┌─ claude ────────────────┐   │
-  │ ████░  │ │ 好的，我来看看...       │   │
-  │ 8/16GB │ │ ...                     │   │
-  │        │ └─────────────────────────┘   │
-  │ GPU    │                                │
-  │ ░░░░   │                                │
-  │ 0%     │                                │
-  │ VRAM   │                                │
-  │ ██░░   │ ┌──────────────────────┐      │
-  │ 4/8GB  │ │ Ask AI...        [▶] │      │
-  │        │ └──────────────────────┘      │
-  │ Disk   │                                │
-  │ ████░  │ Provider: [Claude ▾]          │
-  │ 450GB  │ Model:    [Opus 4 ▾]         │
-  │ free   │ CWD:      [/home/user ▾]     │
-  │        │ Mode:     [Act ▾]             │
-  ├────────┤                                │
-  │ 项目   │                                │
-  │ repo-a │                                │
-  │ repo-b │                                │
-  └────────┴────────────────────────────────┘
+```typescript
+// 当 P2P 打洞失败，两端都连到 Relay
+// 按 sessionUUID 配对，然后 pipe
+const waiting = new Map<string, WebSocket>();
 
-移动端: 状态面板收起为可展开的顶部条
-
-功能:
-  - 左侧: 实时硬件状态图表 (mini charts)
-  - 左下: 该机器上的 git 项目列表 (自动扫描)
-  - 右侧: AI 对话，完全复用现有聊天 UI
-  - 底部: LLM Provider/Model 选择器
-  - SSH 按钮: 打开终端连接到该机器
-
-QA 检查点:
-  □ 硬件状态图表 5s 更新无卡顿
-  □ 对话流式输出延迟 < 200ms
-  □ 切换 LLM provider 后下一条消息用新 provider
-  □ 移动端左侧面板折叠展开流畅
-```
-
-#### Contract B4: 设置 & 角色切换
-```
-页面: /settings
-
-功能:
-  1. 管理密码设置/修改
-  2. 角色切换
-     - "升级为 Controller" 按钮 → 输入管理密码 → 解锁完整控制面板
-     - 多个 Controller 可同时存在
-  3. 网络设置
-     - Main Server 地址
-     - 端口配置
-     - NAT 穿透开关
-  4. SSH Mesh 开关
-     - 全局开关
-     - 每台机器单独开关
-  5. 通知设置
-     - 机器离线通知
-     - 任务完成通知
-     - 磁盘满警告
-  6. LLM 配置 (详见 Manager D)
-
-QA 检查点:
-  □ 管理密码错误时明确提示
-  □ 升级 Controller 后立即看到所有机器
-  □ 降级回 controlled 后面板隐藏
-  □ SSH Mesh 开关生效 < 10s
-```
-
----
-
-### Manager C: 系统监控层 (Monitor Manager)
-
-**职责**: 硬件信息采集、展示、告警
-
-#### Contract C1: 跨平台硬件采集库
-```
-输出: @openclaw/sysinfo 包
-
-采集项:
-  CPU:
-    - Windows: wmic + powershell (Get-Counter)
-    - macOS: sysctl + powermetrics
-    - Linux: /proc/stat + /proc/cpuinfo + lm-sensors
-    → { model, cores, threads, usage_percent, temp_celsius }
-
-  GPU:
-    - NVIDIA: nvidia-smi --query-gpu=... --format=csv,noheader
-    - AMD: rocm-smi (Linux), 无 (Win/Mac fallback)
-    - Intel: 暂不支持
-    - Apple Silicon: powermetrics (GPU 部分)
-    - 无 GPU: 返回 null
-    → { model, vram_used_mb, vram_total_mb, usage_percent, temp_celsius }[]
-
-  RAM:
-    - 全平台: os.totalmem() + os.freemem() (Node.js 内置)
-    → { used_mb, total_mb }
-
-  Disk:
-    - Windows: wmic logicaldisk
-    - Unix: df -h + statvfs
-    → { mount, fs_type, used_gb, total_gb }[]
-
-  Network:
-    - 全平台: /proc/net/dev 或 netstat 或 性能计数器
-    → { rx_bytes_sec, tx_bytes_sec }
-
-  OS Info:
-    - Node.js 内置: os.platform(), os.release(), os.hostname(), os.arch()
-    → { platform, version, hostname, arch }
-
-实现注意:
-  - nvidia-smi 不存在时 catch 并返回 null，不 crash
-  - 采集频率可配: 默认 5s
-  - 首次采集 < 500ms，后续 < 100ms (缓存路径)
-
-QA 检查点:
-  □ Windows 10/11: CPU + RAM + GPU(NVIDIA) 正确
-  □ macOS (Intel + Apple Silicon): CPU + RAM 正确，GPU usage 有值
-  □ Linux: CPU + RAM + Disk 正确
-  □ 无 GPU 机器: gpu 字段为 null，不报错
-  □ 连续运行 24h 无内存泄漏
-  □ 采集过程 CPU 占用 < 1%
-```
-
-#### Contract C2: 监控数据存储 & 历史
-```
-输出: 时序数据存储模块
-
-方案: SQLite + 降采样
-
-  - 最近 1h: 5s 精度 (原始)
-  - 最近 24h: 1min 精度 (12:1 降采样)
-  - 最近 7d: 15min 精度 (180:1)
-  - 更早: 丢弃
-
-存储位置:
-  - Agent 本地: ~/.openclaw/metrics.db
-  - Server: 聚合所有 Agent 的摘要数据
-
-QA 检查点:
-  □ 7 天数据量 < 50MB per agent
-  □ 查询最近 1h 数据 < 50ms
-  □ 降采样无数据丢失边界问题
-```
-
----
-
-### Manager D: LLM 接入层 (LLM Manager)
-
-**职责**: 统一多 LLM provider 接口，本地 + 远程 + CLI
-
-#### Contract D1: 统一 LLM Adapter 接口
-```
-输出: @openclaw/llm-adapters 包
-
-统一接口:
-  interface LLMAdapter {
-    id: string                      // "claude-cli" | "openai" | "ollama" | ...
-    name: string                    // 显示名
-    models(): Promise<Model[]>      // 可用模型列表
-    chat(req: ChatRequest): AsyncIterable<ChatChunk>  // 流式对话
-    abort(): void                   // 中断
+function handleRelay(ws, sessionId) {
+  const other = waiting.get(sessionId);
+  if (other) {
+    waiting.delete(sessionId);
+    // 双向 pipe
+    ws.on("message", (d) => other.send(d));
+    other.on("message", (d) => ws.send(d));
+  } else {
+    waiting.set(sessionId, ws);
   }
+}
+```
 
-  interface ChatRequest {
-    model: string
-    messages: Message[]
-    cwd?: string                    // 工作目录 (CLI 类)
-    permissionMode?: string         // CLI 类专用
-    temperature?: number
-    max_tokens?: number
+### wol.ts — 代理唤醒
+
+```typescript
+// Controller 要唤醒某台机器
+// Server 找到同子网在线的 Agent → 命令它跑:
+//   echo -e '\xff\xff\xff\xff\xff\xff' + MAC*16 | socat - UDP-DATAGRAM:255.255.255.255:9
+// 或者 Agent 上有 wakeonlan 命令直接用
+```
+
+### QA
+
+```
+□ 100 Agent 注册，查询延迟 < 5ms
+□ Agent 掉线 30s 后正确标记
+□ Relay 配对正确，双向 pipe 无丢数据
+□ WOL 指令能到达同子网 Agent
+□ Server docker 跑起来占用 < 50MB RAM
+```
+
+---
+
+## Module 3: Protocol — 共享消息格式
+
+```
+packages/protocol/
+  src/
+    messages.ts       # 所有消息类型
+    codec.ts          # msgpack encode/decode
+```
+
+**不用 protobuf，用 msgpack。** 原因：
+- 无需编译 .proto 文件
+- JS 生态 msgpack-lite 零依赖
+- 消息简单，不需要 schema 验证
+
+```typescript
+// 全部消息类型，就这些:
+
+// Agent → Server
+{ t: "reg", id, pub_key, nat }           // 注册
+{ t: "hb", stats }                        // 心跳 + 系统状态
+
+// Controller → Server
+{ t: "list" }                             // 查询所有 Agent
+{ t: "connect", target_id }               // 请求连接某 Agent
+{ t: "wol", target_mac, subnet }          // 唤醒
+
+// Server → Controller
+{ t: "peers", list: [...] }               // Agent 列表
+{ t: "route", strategy, addr }            // 连接路由
+
+// PTY 通道 (Controller ↔ Agent，直连或经 Relay)
+{ t: "pty.open", cols, rows, cwd }        // 开终端
+{ t: "pty.i", d: "ls\n" }                // stdin
+{ t: "pty.o", d: "file1 file2\n" }       // stdout
+{ t: "pty.r", c: 120, r: 40 }            // resize
+{ t: "pty.x" }                            // 终端退出
+
+// 快捷指令 (Controller → Agent，走 PTY 之外的通道)
+{ t: "exec", cmd, parse: "json"|"lines" } // 跑命令拿结构化输出
+{ t: "exec.result", data }                 // 结果
+
+// 认证
+{ t: "auth", password_hash }              // 认证
+{ t: "auth.ok", token, role }             // 成功
+{ t: "auth.fail", error }                 // 失败
+```
+
+`exec` 是 `pty` 的简化版：不开交互式终端，跑完返回结果。
+用于系统监控、git status 这类 "跑个命令拿数据" 的场景。
+
+### QA
+
+```
+□ 所有消息 encode → decode 往返一致
+□ 二进制数据 (PTY 输出) 不被破坏
+□ 未知 t 值不 crash
+□ 心跳消息 < 500 bytes
+```
+
+---
+
+## Module 4: UI — Controller 面板
+
+```
+ui/
+  packages/
+    shared/            # 90% 共享代码
+      components/
+        Dashboard.tsx     # 机器列表 + 状态总览
+        MachineCard.tsx   # 单机卡片 (CPU/RAM/GPU/Disk)
+        Terminal.tsx      # xterm.js 终端组件
+        ChatPanel.tsx     # LLM 对话 (= 终端的美化版)
+        LLMSelector.tsx   # Provider/Model 选择器
+        Settings.tsx      # 设置面板
+        Login.tsx         # 认证
+      hooks/
+        useAgent.ts       # WebSocket 连接管理
+        useTerminal.ts    # 终端 session 管理
+        usePeers.ts       # Agent 列表 + 实时状态
+      stores/
+        auth.ts           # token + role
+        peers.ts          # 机器列表状态 (zustand)
+        settings.ts       # 本地设置
+      api/
+        client.ts         # 与 Server/Agent 通信封装
+    mobile/             # React Native (Expo)
+    desktop/            # Electron
+    web/                # Vite (纯 Web)
+```
+
+### Dashboard — 就是一个卡片列表
+
+```
+┌──────────────────────────────────────────────────┐
+│ OpenClaw                [搜索]   [+ 添加]  [⚙]  │
+├──────────────────────────────────────────────────┤
+│                                                   │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
+│  │● Win PC  │  │● Mac Mini│  │○ GPU Box │      │
+│  │          │  │          │  │  (sleep)  │      │
+│  │CPU  23%  │  │CPU  45%  │  │          │      │
+│  │RAM  8/16 │  │RAM 12/32 │  │ [唤醒]   │      │
+│  │GPU  --   │  │GPU  --   │  │RTX 4090  │      │
+│  │SSD  120G │  │SSD  89G  │  │VRAM 0/24 │      │
+│  │          │  │          │  │          │      │
+│  │ [终端]   │  │ [终端]   │  │          │      │
+│  │ [AI对话] │  │ [AI对话] │  │          │      │
+│  └──────────┘  └──────────┘  └──────────┘      │
+│                                                   │
+│  在线 2/3  ·  CPU 12核  ·  RAM 48GB  ·  GPU 1张 │
+└──────────────────────────────────────────────────┘
+```
+
+卡片数据全来自 heartbeat 里的 stats，不需要额外请求。
+
+### Terminal — xterm.js 直连 PTY
+
+```typescript
+// 用 xterm.js + WebSocket 直接对接 Agent PTY
+const term = new Terminal({ cols: 120, rows: 40 });
+const ws = connectToAgent(agentId);
+
+ws.send(msgpack.encode({ t: "pty.open", cols: 120, rows: 40, cwd: "/home/user" }));
+
+term.onData((data) => ws.send(msgpack.encode({ t: "pty.i", d: data })));
+ws.on("message", (raw) => {
+  const msg = msgpack.decode(raw);
+  if (msg.t === "pty.o") term.write(msg.d);
+});
+```
+
+真终端。能跑 vim、htop、tmux、ssh，什么都行。
+
+### ChatPanel — LLM 对话 = 终端的美化版
+
+LLM 对话不是独立功能，是终端的语法糖：
+
+```typescript
+// "AI 对话" 本质上就是:
+function sendToLLM(message, provider, model) {
+  if (provider === "claude-cli") {
+    // 在远程终端跑:
+    exec(`claude --print "${escape(message)}"`);
+  } else if (provider === "ollama") {
+    exec(`ollama run ${model} "${escape(message)}"`);
+  } else if (provider === "openai") {
+    // 用 curl 调 API:
+    exec(`curl -s https://api.openai.com/v1/chat/completions -H "Authorization: Bearer $OPENAI_API_KEY" -d '...'`);
   }
+}
+// 解析输出，渲染成好看的气泡
+```
 
-  interface ChatChunk {
-    type: "text" | "tool_use" | "error" | "done"
-    content: string
-    usage?: { input_tokens, output_tokens }
+或者，对于 API 类 provider，直接在 UI 端调（不走终端）：
+
+```typescript
+// API 类可以直接 fetch，不需要走远程终端
+async function* chatViaAPI(provider, model, messages) {
+  const res = await fetch(provider.baseUrl + "/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${provider.apiKey}` },
+    body: JSON.stringify({ model, messages, stream: true }),
+  });
+  // 解析 SSE stream
+  for await (const chunk of parseSSE(res.body)) {
+    yield chunk.choices[0].delta.content;
   }
+}
 ```
 
-#### Contract D2: Claude Code CLI Adapter
+两种模式都支持：
+1. **CLI 模式**: 通过远程终端跑 `claude` / `ollama` — 适合有 CLI 工具的
+2. **API 模式**: UI 端直接 fetch — 适合 OpenAI/Anthropic/DeepSeek API
+
+### QA
+
 ```
-现有逻辑迁移:
-  - spawn claude --print --output-format json
-  - 支持 native / WSL / SSH 三种启动方式
-  - 流式解析 JSON 输出
-  - 支持 permission mode
-
-新增:
-  - 自动检测 claude 是否安装
-  - 版本检测和兼容性提示
-
-QA 检查点:
-  □ Native 模式: 发送消息、收到流式响应、中断
-  □ WSL 模式: Windows 路径正确转换
-  □ SSH 模式: 远程执行正常
-  □ 未安装 claude 时友好提示
-```
-
-#### Contract D3: OpenAI / Anthropic API Adapter
-```
-支持:
-  - OpenAI API (GPT-4o, o1, o3, ...)
-  - Anthropic API (Claude via API，非 CLI)
-  - DeepSeek API
-  - 任何 OpenAI 兼容 API (自定义 base URL)
-
-实现:
-  - 使用 fetch，不引入 SDK (减少依赖)
-  - API key 加密存储在本地
-  - 流式 SSE 解析
-  - 支持 tool use / function calling
-
-配置:
-  {
-    "providers": [
-      { "id": "openai", "name": "OpenAI", "baseUrl": "https://api.openai.com/v1", "apiKey": "sk-..." },
-      { "id": "anthropic", "name": "Anthropic", "baseUrl": "https://api.anthropic.com", "apiKey": "sk-ant-..." },
-      { "id": "deepseek", "name": "DeepSeek", "baseUrl": "https://api.deepseek.com", "apiKey": "..." },
-      { "id": "custom", "name": "My Proxy", "baseUrl": "http://my-proxy:8080/v1", "apiKey": "..." }
-    ]
-  }
-
-QA 检查点:
-  □ OpenAI GPT-4o 流式对话正常
-  □ Anthropic Claude API 流式正常
-  □ 自定义 base URL 正常
-  □ API key 错误时明确提示
-  □ 网络超时 30s 后提示
-  □ 流式中断正确清理连接
-```
-
-#### Contract D4: Ollama Adapter
-```
-支持:
-  - 本地 Ollama (http://localhost:11434)
-  - 远程 Ollama (任意 IP:port)
-  - 自动发现同网络的 Ollama 实例
-
-实现:
-  - POST /api/chat 流式
-  - GET /api/tags 获取已安装模型
-  - 支持 pull model 下载新模型
-  - 支持 GPU 加速状态显示
-
-QA 检查点:
-  □ 本地 Ollama 对话正常 (qwen2.5, llama3, ...)
-  □ 远程 Ollama 对话正常
-  □ 模型列表正确显示
-  □ Ollama 未运行时友好提示
+□ Dashboard 卡片实时更新 (5s)
+□ 终端能跑 vim，resize 正确
+□ CLI 模式 LLM 对话流式输出
+□ API 模式 LLM 对话流式输出
+□ 移动端终端能用 (触摸键盘)
+□ 离线机器灰色 + WOL 按钮
 ```
 
 ---
 
-### Manager E: 安全层 (Security Manager)
+## Module 5: Auth — 认证 + 角色
 
-**职责**: 认证、加密、权限控制
-
-#### Contract E1: 认证系统
 ```
-层级:
-  1. Agent → Server: ed25519 keypair (首次注册生成)
-  2. Controller → Server: 管理密码 + JWT token
-  3. Agent ↔ Agent: NaCl 加密通道
-  4. SSH Mesh: ed25519 key 自动交换
+packages/auth/
+  src/
+    password.ts       # bcrypt hash/verify
+    token.ts          # JWT 签发/验证
+    role.ts           # controller / controlled 角色管理
+    keystore.ts       # API key 加密存储
+```
 
-管理密码:
-  - 首次启动 Server 时设置
-  - bcrypt hash 存储
-  - 任何 Agent 输入正确密码 → 升级为 Controller
-  - Controller token: JWT, 7 天过期，可手动撤销
+规则：
+- Server 首次启动设管理密码
+- Agent 默认 = controlled (只能被操作)
+- 任何客户端输入管理密码 → 升级为 controller (看到所有机器)
+- 多个 controller 可以共存
+- token 7 天过期
+- API key 存本地，AES 加密，密钥 = 管理密码 hash
 
-API Key 存储:
-  - 各 LLM 的 API key
-  - 使用 OS keychain (keytar):
-    Windows: Credential Manager
-    macOS: Keychain
-    Linux: libsecret
-  - fallback: AES-256 加密文件，密码 = 管理密码 hash
+### QA
 
-QA 检查点:
-  □ 错误密码无法获得 Controller 权限
-  □ Token 过期后自动降级
-  □ API key 不以明文出现在任何日志
-  □ 中间人无法解密 Agent 间通信
+```
+□ 错误密码被拒
+□ 正确密码拿到 controller token
+□ token 过期后自动降级
+□ API key 不明文出现在日志
 ```
 
 ---
 
-## 执行顺序 (4 个 Phase)
+## Module 6: 平台打包
 
-### Phase 1: 基础设施 (可并行)
 ```
-并行:
-  [A1] Rendezvous Server     ← Worker 1
-  [A3] Protocol 定义         ← Worker 2
-  [C1] 硬件采集库            ← Worker 3
-  [D1] LLM Adapter 接口      ← Worker 4
-
-依赖: 无，各自独立
-预期: 这些是所有后续模块的基础
-```
-
-### Phase 2: 核心功能 (依赖 Phase 1)
-```
-并行:
-  [A2] Agent Daemon           ← Worker 5 (依赖 A1, A3, C1)
-  [D2] Claude CLI Adapter     ← Worker 6 (依赖 D1，迁移现有代码)
-  [D3] API Adapters           ← Worker 7 (依赖 D1)
-  [D4] Ollama Adapter         ← Worker 8 (依赖 D1)
-  [E1] 认证系统               ← Worker 9 (依赖 A3)
-  [B1] UI 框架搭建            ← Worker 10
-
-依赖: Phase 1 全部完成
-```
-
-### Phase 3: 集成 (依赖 Phase 2)
-```
-并行:
-  [B2] Dashboard 机器列表     ← Worker 11 (依赖 A2, B1, C1)
-  [B3] 单机详情 + AI 对话     ← Worker 12 (依赖 B1, D2-D4)
-  [C2] 监控数据存储            ← Worker 13 (依赖 C1)
-
-依赖: Phase 2 核心模块完成
-```
-
-### Phase 4: 收尾
-```
-顺序:
-  [B4] 设置 + 角色切换        ← Worker 14
-  多平台打包测试               ← Worker 15
-  集成测试 + 压力测试          ← Worker 16
+desktop:  Electron + electron-builder (现有)
+          → Windows NSIS / Mac DMG / Linux AppImage
+mobile:   React Native + Expo EAS
+          → iOS IPA / Android APK
+web:      Vite build → 静态文件，Server 直接 serve
+agent:    pkg 或 直接 node 启动
+          → Windows Service / macOS LaunchAgent / Linux systemd
+server:   Docker image
 ```
 
 ---
 
-## 目录结构总览
+## 执行计划：3 个 Phase
 
-```
-openclaw/
-├── server/                    # Manager A: Rendezvous Server
-│   ├── src/
-│   │   ├── index.ts
-│   │   ├── registry.ts
-│   │   ├── broker.ts
-│   │   ├── relay.ts
-│   │   ├── wol.ts
-│   │   └── db.ts
-│   ├── package.json
-│   └── Dockerfile
-│
-├── agent/                     # Manager A: Agent Daemon
-│   ├── src/
-│   │   ├── index.ts
-│   │   ├── link.ts
-│   │   ├── connect.ts
-│   │   ├── monitor.ts
-│   │   ├── executor.ts
-│   │   ├── ssh-mesh.ts
-│   │   ├── wol.ts
-│   │   ├── role.ts
-│   │   └── platform/
-│   │       ├── win-service.ts
-│   │       ├── mac-launchagent.ts
-│   │       └── linux-systemd.ts
-│   └── package.json
-│
-├── packages/
-│   ├── protocol/              # Manager A: 共享协议
-│   │   ├── src/
-│   │   │   ├── messages.ts
-│   │   │   ├── encode.ts
-│   │   │   └── decode.ts
-│   │   └── package.json
-│   │
-│   ├── sysinfo/               # Manager C: 硬件采集
-│   │   ├── src/
-│   │   │   ├── cpu.ts
-│   │   │   ├── gpu.ts
-│   │   │   ├── ram.ts
-│   │   │   ├── disk.ts
-│   │   │   ├── network.ts
-│   │   │   └── index.ts
-│   │   └── package.json
-│   │
-│   ├── llm-adapters/          # Manager D: LLM 统一接口
-│   │   ├── src/
-│   │   │   ├── types.ts
-│   │   │   ├── claude-cli.ts
-│   │   │   ├── openai.ts
-│   │   │   ├── anthropic.ts
-│   │   │   ├── ollama.ts
-│   │   │   └── index.ts
-│   │   └── package.json
-│   │
-│   └── security/              # Manager E: 认证加密
-│       ├── src/
-│       │   ├── auth.ts
-│       │   ├── crypto.ts
-│       │   ├── keystore.ts
-│       │   └── jwt.ts
-│       └── package.json
-│
-├── ui/                        # Manager B: 全平台 UI
-│   ├── packages/
-│   │   ├── shared/            # 共享 React 组件
-│   │   │   ├── src/
-│   │   │   │   ├── components/
-│   │   │   │   │   ├── MachineCard.tsx
-│   │   │   │   │   ├── MachineDetail.tsx
-│   │   │   │   │   ├── ChatPanel.tsx
-│   │   │   │   │   ├── StatusBar.tsx
-│   │   │   │   │   ├── LLMSelector.tsx
-│   │   │   │   │   ├── LoginScreen.tsx
-│   │   │   │   │   └── Settings/
-│   │   │   │   ├── hooks/
-│   │   │   │   ├── stores/
-│   │   │   │   └── api/
-│   │   │   └── package.json
-│   │   │
-│   │   ├── mobile/            # React Native (Expo)
-│   │   ├── desktop/           # Electron
-│   │   └── web/               # Vite
-│   └── package.json
-│
-├── router/                    # 保留现有 context router
-│   ├── classify.py
-│   ├── backup.py
-│   ├── web.py
-│   └── contexts/
-│
-├── package.json               # monorepo root (pnpm workspaces)
-├── pnpm-workspace.yaml
-├── tsconfig.base.json
-└── PLAN.md
-```
+### Phase 1: 基石 (并行)
+
+| Contract | 做什么 | 核心产物 |
+|----------|--------|----------|
+| M3 Protocol | 消息格式 + codec | `@openclaw/protocol` |
+| M1 Agent PTY | node-pty 开终端 + 心跳 | `agent/` 能跑 |
+| M2 Server Registry | Agent 注册 + 在线列表 | `server/` 能跑 |
+
+Phase 1 完成标志：**一个 Agent 注册到 Server，Controller 通过 Server 连上 Agent 的终端，能跑 `ls`。**
+
+### Phase 2: 可用 (依赖 Phase 1)
+
+| Contract | 做什么 |
+|----------|--------|
+| M2 Relay | P2P 打洞 + Relay 中继 |
+| M4 Dashboard | 机器列表 + 状态卡片 |
+| M4 Terminal | xterm.js 终端组件 |
+| M4 ChatPanel | LLM 对话 (CLI + API 双模式) |
+| M5 Auth | 密码 + token + 角色切换 |
+
+Phase 2 完成标志：**多台机器在 Dashboard 显示状态，能开终端、能 AI 对话、能切 controller。**
+
+### Phase 3: 完善
+
+| Contract | 做什么 |
+|----------|--------|
+| M2 WOL | 代理唤醒 |
+| M1 SSH Mesh | 自动 SSH 互信 (通过终端跑命令实现) |
+| M4 Settings | 完整设置面板 |
+| M6 Packaging | 全平台打包 |
+
+Phase 3 完成标志：**全平台可安装，WOL 可用，SSH mesh 可用。**
 
 ---
 
-## QA 流水线规则
+## 与现有代码的关系
 
-每个 Contract 完成后自动触发 QA:
+现有 `desktop/` 里的代码不废弃，**迁移复用**:
 
-```
-Worker 完成 Contract
-       ↓
-  自动生成 QA Checklist (基于 Contract 中定义的检查点)
-       ↓
-  QA 运行所有检查
-       ↓
-  ┌─ PASS → 标记 Contract 完成，通知 Manager
-  │
-  └─ FAIL → 生成修复 Contract → 新 Worker/原 Worker 修复
-                ↓
-            再次 QA → 循环直到 PASS
-```
+| 现有代码 | 迁移到 |
+|----------|--------|
+| `main.js` 的 `buildSpawn()` WSL/SSH 逻辑 | `agent/src/pty.ts` |
+| `main.js` 的认证 + token 逻辑 | `packages/auth/` |
+| `main.js` 的 WebSocket server | `server/src/` |
+| `index.html` 的聊天 UI | `ui/packages/shared/ChatPanel.tsx` |
+| `index.html` 的设置面板 | `ui/packages/shared/Settings.tsx` |
+| `classify.py` / `backup.py` | 保留在 `router/`，Agent 启动时挂载 |
 
-QA 工具:
-  - 单元测试: vitest
-  - 集成测试: 模拟多 Agent + Server 场景
-  - 平台测试: GitHub Actions matrix (win/mac/linux)
-  - 性能测试: 内存泄漏检测 (--max-old-space-size + heap snapshot)
-  - 安全测试: API key 明文扫描、注入测试
+---
+
+## 为什么这个架构更好
+
+**之前的 plan**: 16 个 Contract，每个功能一个独立模块
+- 硬件采集模块、LLM adapter 模块、SSH mesh 模块、WOL 模块...
+- 每个模块都要定义接口、写适配器、处理边界情况
+- 代码量大，维护成本高
+
+**现在的 plan**: 6 个模块，核心是一个远程 PTY
+- 硬件采集 = 跑 `nvidia-smi` parse 输出 (10 行代码)
+- LLM 对话 = 跑 `claude --print` 或 `curl API` (20 行代码)
+- SSH mesh = 跑 `ssh-keygen` + `ssh-copy-id` (5 行代码)
+- WOL = 跑 `wakeonlan` (3 行代码)
+- 项目状态 = 跑 `git status` (3 行代码)
+
+**复杂度从 O(n个功能) 变成 O(1个终端)。**
+新功能 = 新命令，不需要改架构。
