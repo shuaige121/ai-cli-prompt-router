@@ -20,6 +20,15 @@ const defaults = {
   webEnabled: false,     // Web server OFF by default
   webPort: 3456,
   webPassword: "",       // empty = no password (but server is off anyway)
+
+  // Launch config
+  launchMode: "auto",    // "auto" | "native" | "wsl" | "ssh"
+  elevate: false,        // Windows: run as admin (UAC prompt on startup)
+  wslDistro: "",         // WSL distro name (empty = default)
+  sshHost: "",           // SSH host for remote claude
+  sshUser: "",           // SSH user
+  defaultCwd: "",        // default working directory
+  defaultPermission: "default", // default permission mode
 };
 
 let settings = { ...defaults };
@@ -85,13 +94,42 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   loadSettings();
+
+  // Windows elevation: if requested and not already admin, re-launch elevated
+  if (settings.elevate && process.platform === "win32" && !isElevated()) {
+    try {
+      const { execSync } = require("child_process");
+      // Use PowerShell to re-launch with admin rights
+      execSync(
+        `powershell -Command "Start-Process '${process.execPath}' -ArgumentList '${process.argv.slice(1).join("' '")}' -Verb RunAs"`,
+        { windowsHide: true }
+      );
+      app.quit();
+      return;
+    } catch {
+      // User declined UAC or error - continue without elevation
+      console.log("Elevation failed or declined, continuing without admin rights");
+    }
+  }
+
   createWindow();
   if (settings.webEnabled) {
     startWebServer();
   }
 });
+
+function isElevated() {
+  if (process.platform !== "win32") return true;
+  try {
+    const { execSync } = require("child_process");
+    execSync("net session", { windowsHide: true, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 app.on("window-all-closed", () => {
   killClaude();
@@ -110,25 +148,82 @@ function killClaude() {
   }
 }
 
-function runClaude({ message, cwd, permissionMode }, onChunk) {
+function resolveMode() {
+  if (settings.launchMode !== "auto") return settings.launchMode;
+  // Auto-detect: if Windows and not in WSL already, use wsl
+  if (process.platform === "win32") return "wsl";
+  return "native";
+}
+
+function buildSpawn({ message, cwd, permissionMode }) {
+  const claudeArgs = ["--print", "--output-format", "json"];
+
+  const perm = permissionMode || settings.defaultPermission || "default";
+  if (perm === "dangerously-skip-permissions") {
+    claudeArgs.push("--dangerously-skip-permissions");
+  } else if (perm && perm !== "default") {
+    claudeArgs.push("--permission-mode", perm);
+  }
+
+  claudeArgs.push(message);
+
+  const mode = resolveMode();
+  const effectiveCwd = cwd || settings.defaultCwd || process.env.HOME;
+
+  if (mode === "wsl") {
+    // Run claude inside WSL
+    const distroArgs = settings.wslDistro ? ["-d", settings.wslDistro] : [];
+    const wslCmd = `cd ${shellEscape(winToWslPath(effectiveCwd))} && claude ${claudeArgs.map(shellEscape).join(" ")}`;
+    return {
+      cmd: "wsl.exe",
+      args: [...distroArgs, "--", "bash", "-lc", wslCmd],
+      opts: { env: { ...process.env }, shell: false },
+    };
+  }
+
+  if (mode === "ssh") {
+    // Run claude on remote host via SSH
+    const sshTarget = settings.sshUser
+      ? `${settings.sshUser}@${settings.sshHost}`
+      : settings.sshHost;
+    const remoteCmd = `cd ${shellEscape(effectiveCwd)} && claude ${claudeArgs.map(shellEscape).join(" ")}`;
+    return {
+      cmd: "ssh",
+      args: ["-tt", sshTarget, remoteCmd],
+      opts: { env: { ...process.env }, shell: false },
+    };
+  }
+
+  // Native mode
+  return {
+    cmd: "claude",
+    args: claudeArgs,
+    opts: { cwd: effectiveCwd, env: { ...process.env }, shell: true },
+  };
+}
+
+function shellEscape(s) {
+  if (!s) return "''";
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+function winToWslPath(p) {
+  if (!p || process.platform !== "win32") return p;
+  // Convert C:\foo\bar -> /mnt/c/foo/bar
+  const m = p.match(/^([A-Za-z]):\\/);
+  if (m) {
+    return "/mnt/" + m[1].toLowerCase() + p.slice(2).replace(/\\/g, "/");
+  }
+  return p.replace(/\\/g, "/");
+}
+
+function runClaude(opts, onChunk) {
   killClaude();
 
   return new Promise((resolve) => {
-    const args = ["--print", "--output-format", "json"];
+    const { cmd, args, opts: spawnOpts } = buildSpawn(opts);
 
-    if (permissionMode === "dangerously-skip-permissions") {
-      args.push("--dangerously-skip-permissions");
-    } else if (permissionMode && permissionMode !== "default") {
-      args.push("--permission-mode", permissionMode);
-    }
-
-    args.push(message);
-
-    claudeProcess = spawn("claude", args, {
-      cwd: cwd || process.env.HOME,
-      env: { ...process.env },
-      shell: true,
-    });
+    claudeProcess = spawn(cmd, args, spawnOpts);
 
     let output = "";
     let error = "";
@@ -190,6 +285,15 @@ ipcMain.handle("get-settings", () => {
     webPort: settings.webPort,
     webPassword: settings.webPassword ? "***" : "",
     webUrl: settings.webEnabled ? `http://${getLocalIP()}:${settings.webPort}` : null,
+    launchMode: settings.launchMode,
+    elevate: settings.elevate,
+    wslDistro: settings.wslDistro,
+    sshHost: settings.sshHost,
+    sshUser: settings.sshUser,
+    defaultCwd: settings.defaultCwd,
+    defaultPermission: settings.defaultPermission,
+    platform: process.platform,
+    isAdmin: process.platform === "win32" ? isElevated() : process.getuid?.() === 0,
   };
 });
 
@@ -202,14 +306,21 @@ ipcMain.handle("save-settings", (event, newSettings) => {
   settings.webEnabled = !!newSettings.webEnabled;
   settings.webPort = parseInt(newSettings.webPort, 10) || 3456;
 
-  // Only update password if explicitly changed (not the masked "***")
   if (newSettings.webPassword !== "***") {
     settings.webPassword = newSettings.webPassword || "";
   }
 
+  // Launch settings
+  if (newSettings.launchMode) settings.launchMode = newSettings.launchMode;
+  if (newSettings.elevate !== undefined) settings.elevate = !!newSettings.elevate;
+  if (newSettings.wslDistro !== undefined) settings.wslDistro = newSettings.wslDistro;
+  if (newSettings.sshHost !== undefined) settings.sshHost = newSettings.sshHost;
+  if (newSettings.sshUser !== undefined) settings.sshUser = newSettings.sshUser;
+  if (newSettings.defaultCwd !== undefined) settings.defaultCwd = newSettings.defaultCwd;
+  if (newSettings.defaultPermission !== undefined) settings.defaultPermission = newSettings.defaultPermission;
+
   saveSettings();
 
-  // Restart web server if needed
   if (needRestart) {
     stopWebServer();
     if (settings.webEnabled) {
@@ -222,6 +333,15 @@ ipcMain.handle("save-settings", (event, newSettings) => {
     webPort: settings.webPort,
     webPassword: settings.webPassword ? "***" : "",
     webUrl: settings.webEnabled ? `http://${getLocalIP()}:${settings.webPort}` : null,
+    launchMode: settings.launchMode,
+    elevate: settings.elevate,
+    wslDistro: settings.wslDistro,
+    sshHost: settings.sshHost,
+    sshUser: settings.sshUser,
+    defaultCwd: settings.defaultCwd,
+    defaultPermission: settings.defaultPermission,
+    platform: process.platform,
+    isAdmin: process.platform === "win32" ? isElevated() : process.getuid?.() === 0,
   };
 });
 

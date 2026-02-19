@@ -493,14 +493,68 @@ body {
 
 <!-- Settings panel (Electron only) -->
 <div class="settings-overlay" id="settingsOverlay">
-  <div class="settings-panel">
+  <div class="settings-panel" style="max-height:90vh;overflow-y:auto">
     <h3>
       Settings
       <button id="settingsClose">&times;</button>
     </h3>
 
+    <!-- Launch settings -->
+    <div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;font-weight:600">Launch</div>
+
+    <div class="setting-row">
+      <label>Claude runs via</label>
+      <select id="launchMode" style="width:100%;padding:9px 12px;background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:14px">
+        <option value="auto">Auto-detect</option>
+        <option value="native">Native (local CLI)</option>
+        <option value="wsl">WSL (Windows Subsystem for Linux)</option>
+        <option value="ssh">SSH (remote host)</option>
+      </select>
+    </div>
+
+    <div class="toggle-row" id="elevateRow" style="display:none">
+      <span>Run as Admin (UAC)</span>
+      <div class="toggle" id="elevateToggle"></div>
+    </div>
+
+    <div class="setting-row" id="wslDistroRow" style="display:none">
+      <label>WSL Distro (empty = default)</label>
+      <input type="text" id="wslDistro" placeholder="Ubuntu">
+    </div>
+
+    <div id="sshSection" style="display:none">
+      <div class="setting-row">
+        <label>SSH Host</label>
+        <input type="text" id="sshHost" placeholder="192.168.1.100">
+      </div>
+      <div class="setting-row">
+        <label>SSH User (empty = current)</label>
+        <input type="text" id="sshUser" placeholder="root">
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <label>Default Working Directory</label>
+      <input type="text" id="defaultCwd" placeholder="/home/user/project">
+    </div>
+
+    <div class="setting-row">
+      <label>Default Permission Mode</label>
+      <select id="defaultPermission" style="width:100%;padding:9px 12px;background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:14px">
+        <option value="default">Ask</option>
+        <option value="acceptEdits">Code</option>
+        <option value="plan">Plan</option>
+        <option value="dangerously-skip-permissions">Act (full access)</option>
+      </select>
+    </div>
+
+    <div style="height:1px;background:var(--border);margin:16px 0"></div>
+
+    <!-- Remote access settings -->
+    <div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;font-weight:600">Remote Access</div>
+
     <div class="toggle-row">
-      <span>Remote Access (Web Server)</span>
+      <span>Web Server</span>
       <div class="toggle" id="webToggle"></div>
     </div>
 
@@ -516,6 +570,7 @@ body {
 
     <button class="settings-save" id="settingsSave">Save</button>
     <div class="settings-info" id="settingsInfo"></div>
+    <div id="adminBadge" style="display:none;text-align:center;margin-top:6px;font-size:11px;color:var(--green)"></div>
   </div>
 </div>
 
@@ -601,6 +656,17 @@ const portInput = $("portInput");
 const passwordInput = $("passwordInput");
 const settingsSave = $("settingsSave");
 const settingsInfo = $("settingsInfo");
+const launchModeEl = $("launchMode");
+const elevateToggle = $("elevateToggle");
+const elevateRow = $("elevateRow");
+const wslDistroRow = $("wslDistroRow");
+const wslDistroEl = $("wslDistro");
+const sshSection = $("sshSection");
+const sshHostEl = $("sshHost");
+const sshUserEl = $("sshUser");
+const defaultCwdEl = $("defaultCwd");
+const defaultPermissionEl = $("defaultPermission");
+const adminBadge = $("adminBadge");
 
 let busy = false;
 let currentAssistantEl = null;
@@ -644,6 +710,36 @@ async function initElectron() {
     webUrlEl.style.display = "inline";
   }
 
+  // Launch settings
+  launchModeEl.value = s.launchMode || "auto";
+  if (s.elevate) elevateToggle.classList.add("on");
+  wslDistroEl.value = s.wslDistro || "";
+  sshHostEl.value = s.sshHost || "";
+  sshUserEl.value = s.sshUser || "";
+  defaultCwdEl.value = s.defaultCwd || "";
+  defaultPermissionEl.value = s.defaultPermission || "default";
+
+  // Show admin badge
+  if (s.isAdmin) {
+    adminBadge.textContent = "Running as Administrator";
+    adminBadge.style.display = "block";
+  }
+
+  // Show/hide platform-specific options
+  if (s.platform === "win32") {
+    elevateRow.style.display = "flex";
+  }
+  updateLaunchUI();
+
+  launchModeEl.addEventListener("change", updateLaunchUI);
+  elevateToggle.addEventListener("click", () => elevateToggle.classList.toggle("on"));
+
+  function updateLaunchUI() {
+    const mode = launchModeEl.value;
+    wslDistroRow.style.display = (mode === "wsl" || (mode === "auto" && s.platform === "win32")) ? "block" : "none";
+    sshSection.style.display = mode === "ssh" ? "block" : "none";
+  }
+
   // Settings panel events
   settingsBtn.addEventListener("click", () => settingsOverlay.classList.add("open"));
   settingsClose.addEventListener("click", () => settingsOverlay.classList.remove("open"));
@@ -658,6 +754,13 @@ async function initElectron() {
       webEnabled: webToggle.classList.contains("on"),
       webPort: portInput.value,
       webPassword: passwordInput.value,
+      launchMode: launchModeEl.value,
+      elevate: elevateToggle.classList.contains("on"),
+      wslDistro: wslDistroEl.value,
+      sshHost: sshHostEl.value,
+      sshUser: sshUserEl.value,
+      defaultCwd: defaultCwdEl.value,
+      defaultPermission: defaultPermissionEl.value,
     });
 
     if (result.webUrl) {
@@ -667,9 +770,10 @@ async function initElectron() {
       settingsInfo.style.color = "var(--green)";
     } else {
       webUrlEl.style.display = "none";
-      settingsInfo.textContent = "Saved. Remote access disabled.";
-      settingsInfo.style.color = "var(--text-secondary)";
+      settingsInfo.textContent = "Saved.";
+      settingsInfo.style.color = "var(--green)";
     }
+    setTimeout(() => { settingsInfo.textContent = ""; }, 3000);
   });
 }
 
