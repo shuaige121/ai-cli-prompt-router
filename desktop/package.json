@@ -1,11 +1,14 @@
 {
   "name": "claude-code-gui",
   "version": "0.1.0",
-  "description": "Lightweight Windows GUI for Claude Code CLI",
+  "description": "Lightweight cross-platform GUI for Claude Code CLI",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
     "dev": "electron . --dev"
   },
   "author": "leonard",
@@ -23,6 +26,14 @@
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "icon": "assets/icon.png"
     },
     "nsis": {
       "oneClick": false,
