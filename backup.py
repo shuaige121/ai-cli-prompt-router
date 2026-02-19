@@ -12,6 +12,13 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+DEBUG = os.environ.get("ROUTER_DEBUG", "").lower() in ("1", "true", "yes")
+
+def debug(msg: str):
+    """Print debug message to stderr."""
+    if DEBUG:
+        print(f"[backup] {msg}", file=sys.stderr)
+
 HISTORY_DIR = Path(__file__).parent / "history"
 INDEX_FILE = HISTORY_DIR / "index.json"
 OLLAMA_URL = "http://localhost:11434/api/generate"
@@ -56,8 +63,22 @@ def extract_user_messages(transcript_path: str, limit: int = 5) -> list[str]:
     return messages
 
 
+def _fallback_title(messages: list[str]) -> str:
+    """Generate a title from the first message when Ollama is unavailable."""
+    if not messages:
+        return "untitled"
+    # Take first message, truncate to reasonable title length
+    first = messages[0].strip()
+    # Remove common prefixes
+    for prefix in ("请", "帮我", "帮忙", "麻烦"):
+        if first.startswith(prefix):
+            first = first[len(prefix):]
+    title = first[:15].split("\n")[0]
+    return title if title else "untitled"
+
+
 def generate_title(messages: list[str]) -> str:
-    """用 Ollama 生成会话标题"""
+    """用 Ollama 生成会话标题，Ollama 不可用时从首条消息提取"""
     if not messages:
         return "untitled"
 
@@ -79,11 +100,15 @@ def generate_title(messages: list[str]) -> str:
         with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT) as resp:
             result = json.loads(resp.read())
             title = result.get("response", "").strip().strip('"').strip("《》")
-            # 清理：去掉换行，截断
             title = title.split("\n")[0][:20]
-            return title if title else "untitled"
-    except Exception:
-        return "untitled"
+            if title:
+                debug(f"ollama title: {title!r}")
+                return title
+            debug("ollama returned empty, using fallback")
+            return _fallback_title(messages)
+    except Exception as e:
+        debug(f"ollama unavailable ({e}), using fallback title")
+        return _fallback_title(messages)
 
 
 def sanitize_filename(s: str) -> str:
@@ -102,6 +127,7 @@ def main():
     transcript_path = data.get("transcript_path", "")
 
     if not session_id or not transcript_path or not os.path.exists(transcript_path):
+        debug("missing session_id or transcript_path, skipping")
         sys.exit(0)
 
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -109,6 +135,7 @@ def main():
 
     if session_id in index:
         # 已有记录，只更新备份文件
+        debug(f"updating existing session {session_id[:8]}")
         entry = index[session_id]
         backup_path = entry["path"]
         shutil.copy2(transcript_path, backup_path)
@@ -117,6 +144,7 @@ def main():
         save_index(index)
     else:
         # 新会话：生成标题，创建备份
+        debug(f"new session {session_id[:8]}, generating title")
         messages = extract_user_messages(transcript_path)
         title = generate_title(messages)
         date_str = datetime.now().strftime("%Y%m%d_%H%M")

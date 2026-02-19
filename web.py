@@ -3,7 +3,7 @@
 AI CLI Prompt Router - Web UI
 查看会话历史记录的简单 web 界面。
 启动: python3 ~/router/web.py
-访问: http://localhost:8899
+访问: http://localhost:8877
 """
 
 import json

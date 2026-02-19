@@ -11,6 +11,14 @@ import os
 import re
 import sys
 import urllib.request
+import time
+
+DEBUG = os.environ.get("ROUTER_DEBUG", "").lower() in ("1", "true", "yes")
+
+def debug(msg: str):
+    """Print debug message to stderr (never contaminates stdout JSON)."""
+    if DEBUG:
+        print(f"[router] {msg}", file=sys.stderr)
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "qwen2.5:1.5b"
@@ -163,8 +171,9 @@ def ollama_classify(prompt: str) -> tuple[str, list[str]]:
             result = json.loads(resp.read())
             parsed = json.loads(result.get("response", ""))
             return parsed.get("query", ""), parsed.get("contexts", [])
-    except Exception:
-        return "", []
+    except Exception as e:
+        debug(f"ollama error: {e}")
+        return "", ["work"]
 
 
 # ============================================================
@@ -215,10 +224,18 @@ def main():
     if not prompt:
         sys.exit(0)
 
+    debug(f"prompt length={len(prompt)}, first 80 chars: {prompt[:80]!r}")
+
     # Step 1: 分类
+    t0 = time.time()
     query, ctx_names = regex_match(prompt)
-    if not query and not ctx_names:
+    if query or ctx_names:
+        debug(f"regex hit in {time.time()-t0:.3f}s -> query={query!r}, ctx={ctx_names}")
+    else:
+        debug("regex miss, falling back to Ollama")
+        t1 = time.time()
         query, ctx_names = ollama_classify(prompt)
+        debug(f"ollama classified in {time.time()-t1:.3f}s -> query={query!r}, ctx={ctx_names}")
 
     # Step 2: 收集上下文
     parts = []
