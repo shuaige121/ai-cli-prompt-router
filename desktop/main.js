@@ -1,9 +1,17 @@
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
+const http = require("http");
+const { WebSocketServer } = require("ws");
+const fs = require("fs");
+const os = require("os");
 
 let mainWindow;
 let claudeProcess = null;
+const WEB_PORT = 3456;
+
+// Track all connected WebSocket clients
+const wsClients = new Set();
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -24,7 +32,11 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createWindow();
+  startWebServer();
+});
+
 app.on("window-all-closed", () => {
   killClaude();
   app.quit();
@@ -41,14 +53,7 @@ function killClaude() {
   }
 }
 
-ipcMain.handle("select-folder", async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ["openDirectory"],
-  });
-  return result.canceled ? null : result.filePaths[0];
-});
-
-ipcMain.handle("send-message", async (event, { message, cwd, permissionMode }) => {
+function runClaude({ message, cwd, permissionMode }, onChunk) {
   killClaude();
 
   return new Promise((resolve) => {
@@ -56,7 +61,7 @@ ipcMain.handle("send-message", async (event, { message, cwd, permissionMode }) =
 
     if (permissionMode === "dangerously-skip-permissions") {
       args.push("--dangerously-skip-permissions");
-    } else if (permissionMode) {
+    } else if (permissionMode && permissionMode !== "default") {
       args.push("--permission-mode", permissionMode);
     }
 
@@ -74,8 +79,7 @@ ipcMain.handle("send-message", async (event, { message, cwd, permissionMode }) =
     claudeProcess.stdout.on("data", (data) => {
       const chunk = data.toString();
       output += chunk;
-      // Stream chunks to renderer
-      mainWindow.webContents.send("claude-chunk", chunk);
+      if (onChunk) onChunk(chunk);
     });
 
     claudeProcess.stderr.on("data", (data) => {
@@ -84,13 +88,12 @@ ipcMain.handle("send-message", async (event, { message, cwd, permissionMode }) =
 
     claudeProcess.on("close", (code) => {
       claudeProcess = null;
-      // Try to parse final JSON output
       let result = output;
       try {
         const parsed = JSON.parse(output);
         result = parsed.result || output;
       } catch {
-        // plain text output is fine
+        // plain text is fine
       }
       resolve({ result, error, code });
     });
@@ -100,9 +103,110 @@ ipcMain.handle("send-message", async (event, { message, cwd, permissionMode }) =
       resolve({ result: "", error: err.message, code: 1 });
     });
   });
+}
+
+// ============================================================
+// IPC for Electron renderer
+// ============================================================
+
+ipcMain.handle("select-folder", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openDirectory"],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle("send-message", async (event, opts) => {
+  return runClaude(opts, (chunk) => {
+    mainWindow.webContents.send("claude-chunk", chunk);
+  });
 });
 
 ipcMain.handle("stop-claude", () => {
   killClaude();
   return { stopped: true };
 });
+
+ipcMain.handle("get-web-url", () => {
+  return `http://${getLocalIP()}:${WEB_PORT}`;
+});
+
+// ============================================================
+// HTTP + WebSocket server for mobile access
+// ============================================================
+
+function getLocalIP() {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === "IPv4" && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return "127.0.0.1";
+}
+
+function startWebServer() {
+  const server = http.createServer((req, res) => {
+    // Serve the mobile-ready HTML page
+    if (req.url === "/" || req.url === "/index.html") {
+      const htmlPath = path.join(__dirname, "renderer", "index.html");
+      fs.readFile(htmlPath, (err, data) => {
+        if (err) {
+          res.writeHead(500);
+          res.end("Error loading page");
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(data);
+      });
+    } else {
+      res.writeHead(404);
+      res.end("Not found");
+    }
+  });
+
+  const wss = new WebSocketServer({ server });
+
+  wss.on("connection", (ws) => {
+    wsClients.add(ws);
+    ws.on("close", () => wsClients.delete(ws));
+
+    ws.on("message", async (raw) => {
+      let msg;
+      try {
+        msg = JSON.parse(raw.toString());
+      } catch {
+        return;
+      }
+
+      if (msg.type === "send") {
+        ws.send(JSON.stringify({ type: "status", busy: true }));
+
+        const result = await runClaude(
+          {
+            message: msg.message,
+            cwd: msg.cwd || null,
+            permissionMode: msg.permissionMode || "default",
+          },
+          (chunk) => {
+            ws.send(JSON.stringify({ type: "chunk", data: chunk }));
+          }
+        );
+
+        ws.send(JSON.stringify({ type: "done", ...result }));
+        ws.send(JSON.stringify({ type: "status", busy: false }));
+      } else if (msg.type === "stop") {
+        killClaude();
+        ws.send(JSON.stringify({ type: "stopped" }));
+        ws.send(JSON.stringify({ type: "status", busy: false }));
+      }
+    });
+  });
+
+  server.listen(WEB_PORT, "0.0.0.0", () => {
+    const ip = getLocalIP();
+    console.log(`Web server running at http://${ip}:${WEB_PORT}`);
+  });
+}

@@ -2,8 +2,11 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude Code GUI</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0d1117">
+<title>Claude Code</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -13,41 +16,49 @@
   --bg-tertiary: #21262d;
   --text-primary: #e6edf3;
   --text-secondary: #8b949e;
-  --accent-blue: #58a6ff;
-  --accent-green: #3fb950;
-  --accent-orange: #d29922;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --orange: #d29922;
+  --red: #da3633;
   --border: #30363d;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+}
+
+html, body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  height: 100%;
+  overflow: hidden;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  height: 100vh;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
   -webkit-app-region: drag;
 }
 
-/* ---- Top bar ---- */
+/* ==== Top bar ==== */
 .topbar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   padding: 10px 16px;
+  padding-top: calc(10px + var(--safe-t));
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
-  -webkit-app-region: drag;
   flex-shrink: 0;
+  -webkit-app-region: drag;
 }
-
 .topbar > * { -webkit-app-region: no-drag; }
 
 .logo {
   font-weight: 700;
   font-size: 15px;
-  color: var(--accent-blue);
+  color: var(--accent);
   white-space: nowrap;
 }
 
@@ -55,31 +66,52 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 12px;
+  padding: 6px 12px;
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text-secondary);
   font-size: 13px;
   cursor: pointer;
-  max-width: 300px;
+  max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.folder-btn:hover { border-color: var(--accent-blue); color: var(--text-primary); }
+.folder-btn:hover { border-color: var(--accent); color: var(--text-primary); }
 
-.mode-select {
-  padding: 5px 10px;
+/* In browser mode, show a text input for cwd instead */
+.cwd-input {
+  padding: 6px 12px;
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  width: 200px;
+  display: none;
+}
+.cwd-input:focus { outline: none; border-color: var(--accent); }
+.cwd-input::placeholder { color: var(--text-secondary); }
+
+.topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mode-select {
+  padding: 6px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   color: var(--text-primary);
   font-size: 13px;
   cursor: pointer;
-  margin-left: auto;
+  -webkit-appearance: none;
 }
-.mode-select:focus { outline: none; border-color: var(--accent-blue); }
+.mode-select:focus { outline: none; border-color: var(--accent); }
 
 .status {
   font-size: 12px;
@@ -89,50 +121,66 @@ body {
   gap: 4px;
 }
 .status-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--accent-green);
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--green);
 }
-.status-dot.busy { background: var(--accent-orange); animation: pulse 1s infinite; }
-@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+.status-dot.busy { background: var(--orange); animation: pulse 1s infinite; }
+.status-dot.disconnected { background: var(--red); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 
-/* ---- Messages ---- */
+.web-url {
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: none;
+}
+
+/* ==== Connection banner (web only) ==== */
+.conn-banner {
+  padding: 6px 12px;
+  background: #3d1f1f;
+  color: #f88;
+  font-size: 12px;
+  text-align: center;
+  display: none;
+  flex-shrink: 0;
+}
+.conn-banner.show { display: block; }
+
+/* ==== Messages ==== */
 .messages {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
+  -webkit-overflow-scrolling: touch;
 }
-
 .messages::-webkit-scrollbar { width: 6px; }
 .messages::-webkit-scrollbar-track { background: transparent; }
 .messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
 .msg {
-  max-width: 85%;
-  padding: 12px 16px;
-  border-radius: 12px;
+  max-width: 88%;
+  padding: 10px 14px;
+  border-radius: 14px;
   font-size: 14px;
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
 }
-
 .msg.user {
   align-self: flex-end;
   background: #1f3a5f;
   border: 1px solid #264a78;
-  color: var(--text-primary);
+  border-bottom-right-radius: 4px;
 }
-
 .msg.assistant {
   align-self: flex-start;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
-  color: var(--text-primary);
+  border-bottom-left-radius: 4px;
 }
-
 .msg.error {
   align-self: flex-start;
   background: #3d1f1f;
@@ -140,13 +188,10 @@ body {
   color: #f88;
   font-size: 13px;
 }
-
 .msg.system {
   align-self: center;
-  background: transparent;
   color: var(--text-secondary);
   font-size: 12px;
-  padding: 4px 12px;
 }
 
 .welcome {
@@ -157,11 +202,13 @@ body {
   flex: 1;
   color: var(--text-secondary);
   gap: 8px;
+  text-align: center;
+  padding: 40px 20px;
 }
-.welcome h2 { color: var(--text-primary); font-size: 20px; font-weight: 600; }
+.welcome h2 { color: var(--text-primary); font-size: 22px; font-weight: 600; }
 .welcome p { font-size: 14px; }
 
-/* ---- Code blocks ---- */
+/* Code blocks */
 .msg pre {
   background: var(--bg-primary);
   border: 1px solid var(--border);
@@ -170,6 +217,7 @@ body {
   margin: 8px 0;
   overflow-x: auto;
   font-size: 13px;
+  -webkit-overflow-scrolling: touch;
 }
 .msg code {
   font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
@@ -181,9 +229,10 @@ body {
   border-radius: 3px;
 }
 
-/* ---- Input ---- */
+/* ==== Input ==== */
 .input-area {
-  padding: 12px 16px;
+  padding: 10px 14px;
+  padding-bottom: calc(10px + var(--safe-b));
   border-top: 1px solid var(--border);
   background: var(--bg-secondary);
   display: flex;
@@ -197,193 +246,308 @@ body {
   flex: 1;
   background: var(--bg-primary);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 20px;
   color: var(--text-primary);
   font-family: inherit;
-  font-size: 14px;
-  padding: 10px 14px;
+  font-size: 16px;
+  padding: 10px 16px;
   resize: none;
-  min-height: 42px;
-  max-height: 200px;
-  line-height: 1.5;
+  min-height: 44px;
+  max-height: 160px;
+  line-height: 1.4;
 }
-.input-area textarea:focus { outline: none; border-color: var(--accent-blue); }
+.input-area textarea:focus { outline: none; border-color: var(--accent); }
 .input-area textarea::placeholder { color: var(--text-secondary); }
 
-.send-btn, .stop-btn {
-  padding: 10px 18px;
-  border: none;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 600;
+.action-btn {
+  width: 44px; height: 44px;
+  border: none; border-radius: 50%;
+  font-size: 18px;
   cursor: pointer;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: transform 0.1s;
 }
-.send-btn {
-  background: var(--accent-blue);
-  color: #fff;
-}
-.send-btn:hover { background: #4c9aed; }
-.send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.action-btn:active { transform: scale(0.92); }
+.send-btn { background: var(--accent); color: #fff; }
+.send-btn:disabled { opacity: 0.35; }
+.stop-btn { background: var(--red); color: #fff; display: none; }
 
-.stop-btn {
-  background: #da3633;
-  color: #fff;
-  display: none;
+/* ==== Responsive ==== */
+@media (min-width: 768px) {
+  .msg { max-width: 75%; font-size: 14px; }
+  .input-area textarea { font-size: 14px; border-radius: 10px; max-height: 200px; }
+  .action-btn { width: 40px; height: 40px; border-radius: 8px; }
+  .cwd-input { width: 260px; }
 }
-.stop-btn:hover { background: #c62828; }
+
+@media (max-width: 480px) {
+  .topbar { gap: 6px; padding: 8px 10px; padding-top: calc(8px + var(--safe-t)); }
+  .logo { font-size: 14px; }
+  .folder-btn { max-width: 120px; font-size: 12px; padding: 5px 8px; }
+  .cwd-input { width: 120px; font-size: 12px; }
+  .mode-select { font-size: 12px; padding: 5px 8px; }
+  .messages { padding: 10px; gap: 10px; }
+  .msg { max-width: 94%; padding: 8px 12px; }
+  .web-url { display: none !important; }
+}
 </style>
 </head>
 <body>
 
+<!-- Connection banner (web mode) -->
+<div class="conn-banner" id="connBanner"></div>
+
 <!-- Top bar -->
 <div class="topbar">
   <span class="logo">Claude Code</span>
+
+  <!-- Electron: folder picker button -->
   <button class="folder-btn" id="folderBtn" title="Select project folder">
-    <span>&#128193;</span>
     <span id="folderLabel">Select folder...</span>
   </button>
-  <select class="mode-select" id="modeSelect" title="Permission mode">
-    <option value="default">Ask</option>
-    <option value="acceptEdits">Code</option>
-    <option value="plan">Plan</option>
-    <option value="dangerously-skip-permissions">Act (full access)</option>
-  </select>
-  <div class="status">
-    <span class="status-dot" id="statusDot"></span>
-    <span id="statusText">Ready</span>
+
+  <!-- Web: text input for path -->
+  <input class="cwd-input" id="cwdInput" type="text" placeholder="Working dir...">
+
+  <div class="topbar-right">
+    <select class="mode-select" id="modeSelect" title="Permission mode">
+      <option value="default">Ask</option>
+      <option value="acceptEdits">Code</option>
+      <option value="plan">Plan</option>
+      <option value="dangerously-skip-permissions">Act</option>
+    </select>
+    <div class="status">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">Ready</span>
+    </div>
+    <span class="web-url" id="webUrl"></span>
   </div>
 </div>
 
 <!-- Messages -->
 <div class="messages" id="messages">
   <div class="welcome" id="welcome">
-    <h2>Claude Code GUI</h2>
+    <h2>Claude Code</h2>
     <p>Select a project folder and start chatting.</p>
-    <p style="font-size:12px;color:var(--text-secondary)">Powered by Claude Code CLI</p>
+    <p style="font-size:12px;color:var(--text-secondary);margin-top:4px">Powered by Claude Code CLI</p>
   </div>
 </div>
 
 <!-- Input -->
 <div class="input-area">
-  <textarea id="input" rows="1" placeholder="Ask Claude anything..." autofocus></textarea>
-  <button class="send-btn" id="sendBtn">Send</button>
-  <button class="stop-btn" id="stopBtn">Stop</button>
+  <textarea id="input" rows="1" placeholder="Ask Claude..." enterkeyhint="send" autofocus></textarea>
+  <button class="action-btn send-btn" id="sendBtn">&#9654;</button>
+  <button class="action-btn stop-btn" id="stopBtn">&#9632;</button>
 </div>
 
 <script>
-const messagesEl = document.getElementById("messages");
-const welcomeEl = document.getElementById("welcome");
-const inputEl = document.getElementById("input");
-const sendBtn = document.getElementById("sendBtn");
-const stopBtn = document.getElementById("stopBtn");
-const folderBtn = document.getElementById("folderBtn");
-const folderLabel = document.getElementById("folderLabel");
-const modeSelect = document.getElementById("modeSelect");
-const statusDot = document.getElementById("statusDot");
-const statusText = document.getElementById("statusText");
+// ==================================================================
+// Unified controller: auto-detects Electron IPC vs WebSocket
+// ==================================================================
 
-let projectFolder = null;
+const isElectron = !!(window.claude);
+
+const $ = (id) => document.getElementById(id);
+const messagesEl = $("messages");
+const welcomeEl = $("welcome");
+const inputEl = $("input");
+const sendBtn = $("sendBtn");
+const stopBtn = $("stopBtn");
+const folderBtn = $("folderBtn");
+const folderLabel = $("folderLabel");
+const cwdInput = $("cwdInput");
+const modeSelect = $("modeSelect");
+const statusDot = $("statusDot");
+const statusText = $("statusText");
+const connBanner = $("connBanner");
+const webUrlEl = $("webUrl");
+
 let busy = false;
 let currentAssistantEl = null;
+let projectFolder = null;
 
-// ---- Folder selection ----
-folderBtn.addEventListener("click", async () => {
-  const folder = await window.claude.selectFolder();
-  if (folder) {
-    projectFolder = folder;
-    const short = folder.split(/[\\/]/).pop();
-    folderLabel.textContent = short;
-    folderBtn.title = folder;
-  }
-});
+// ---- Mode-specific setup ----
+if (isElectron) {
+  // Show folder button, hide cwd input
+  folderBtn.style.display = "flex";
+  cwdInput.style.display = "none";
 
-// ---- Auto-resize textarea ----
-inputEl.addEventListener("input", () => {
-  inputEl.style.height = "auto";
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 200) + "px";
-});
+  folderBtn.addEventListener("click", async () => {
+    const folder = await window.claude.selectFolder();
+    if (folder) {
+      projectFolder = folder;
+      folderLabel.textContent = folder.split(/[\\/]/).pop();
+      folderBtn.title = folder;
+    }
+  });
+
+  // Show web access URL
+  window.claude.getWebUrl().then((url) => {
+    if (url) {
+      webUrlEl.textContent = url;
+      webUrlEl.style.display = "inline";
+    }
+  });
+
+  // Stream listener
+  window.claude.onChunk(handleChunk);
+} else {
+  // Browser / mobile mode: show cwd input, hide folder button
+  folderBtn.style.display = "none";
+  cwdInput.style.display = "block";
+  connectWebSocket();
+}
+
+// ---- WebSocket (browser mode) ----
+let ws = null;
+let reconnectTimer = null;
+let reconnectDelay = 1000;
+
+function connectWebSocket() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${proto}//${location.host}`);
+
+  ws.onopen = () => {
+    connBanner.classList.remove("show");
+    statusDot.classList.remove("disconnected");
+    reconnectDelay = 1000;
+  };
+
+  ws.onclose = () => {
+    connBanner.textContent = "Disconnected - reconnecting...";
+    connBanner.classList.add("show");
+    statusDot.classList.add("disconnected");
+    statusText.textContent = "Offline";
+    scheduleReconnect();
+  };
+
+  ws.onerror = () => ws.close();
+
+  ws.onmessage = (event) => {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+
+    if (msg.type === "chunk") {
+      handleChunk(msg.data);
+    } else if (msg.type === "done") {
+      if (currentAssistantEl && !currentAssistantEl.textContent.trim()) {
+        currentAssistantEl.textContent = msg.result || "(no response)";
+      }
+      if (msg.error) addMessage("error", msg.error);
+      currentAssistantEl = null;
+      setBusy(false);
+    } else if (msg.type === "status") {
+      setBusy(msg.busy);
+    } else if (msg.type === "stopped") {
+      if (currentAssistantEl && !currentAssistantEl.textContent.trim()) {
+        currentAssistantEl.textContent = "(stopped)";
+      }
+      currentAssistantEl = null;
+      setBusy(false);
+    }
+  };
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    reconnectDelay = Math.min(reconnectDelay * 1.5, 10000);
+    connectWebSocket();
+  }, reconnectDelay);
+}
 
 // ---- Send message ----
 async function send() {
   const text = inputEl.value.trim();
   if (!text || busy) return;
 
-  if (welcomeEl) welcomeEl.remove();
+  if (welcomeEl && welcomeEl.parentNode) welcomeEl.remove();
 
   addMessage("user", text);
   inputEl.value = "";
   inputEl.style.height = "auto";
 
   setBusy(true);
-
-  // Create streaming assistant bubble
   currentAssistantEl = addMessage("assistant", "");
 
-  const { result, error, code } = await window.claude.sendMessage({
-    message: text,
-    cwd: projectFolder,
-    permissionMode: modeSelect.value,
-  });
+  const cwd = isElectron ? projectFolder : (cwdInput.value.trim() || null);
+  const permissionMode = modeSelect.value;
 
-  // If streaming didn't fill it, set final result
-  if (currentAssistantEl && !currentAssistantEl.textContent.trim()) {
-    currentAssistantEl.textContent = result || "(no response)";
+  if (isElectron) {
+    const { result, error } = await window.claude.sendMessage({
+      message: text, cwd, permissionMode,
+    });
+    if (currentAssistantEl && !currentAssistantEl.textContent.trim()) {
+      currentAssistantEl.textContent = result || "(no response)";
+    }
+    if (error) addMessage("error", error);
+    currentAssistantEl = null;
+    setBusy(false);
+  } else if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: "send", message: text, cwd, permissionMode,
+    }));
   }
-
-  if (error) {
-    addMessage("error", error);
-  }
-
-  currentAssistantEl = null;
-  setBusy(false);
 }
 
-// ---- Stream chunks ----
-window.claude.onChunk((chunk) => {
-  if (currentAssistantEl) {
-    // Try to parse streaming JSON lines
-    const lines = chunk.split("\n").filter(Boolean);
-    for (const line of lines) {
-      try {
-        const obj = JSON.parse(line);
-        if (obj.type === "assistant" && obj.message?.content) {
-          for (const block of obj.message.content) {
-            if (block.type === "text") {
-              currentAssistantEl.textContent += block.text;
-            }
-          }
-        } else if (obj.type === "result" && obj.result) {
-          currentAssistantEl.textContent = obj.result;
-        }
-      } catch {
-        // Plain text chunk
-        currentAssistantEl.textContent += chunk;
-        break;
-      }
-    }
-    scrollToBottom();
-  }
-});
-
 // ---- Stop ----
-stopBtn.addEventListener("click", async () => {
-  await window.claude.stopClaude();
+async function stop() {
+  if (isElectron) {
+    await window.claude.stopClaude();
+  } else if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "stop" }));
+  }
   if (currentAssistantEl && !currentAssistantEl.textContent.trim()) {
     currentAssistantEl.textContent = "(stopped)";
   }
   currentAssistantEl = null;
   setBusy(false);
+}
+
+// ---- Stream handler ----
+function handleChunk(chunk) {
+  if (!currentAssistantEl) return;
+
+  const lines = chunk.split("\n").filter(Boolean);
+  for (const line of lines) {
+    try {
+      const obj = JSON.parse(line);
+      if (obj.type === "assistant" && obj.message?.content) {
+        for (const block of obj.message.content) {
+          if (block.type === "text") {
+            currentAssistantEl.textContent += block.text;
+          }
+        }
+      } else if (obj.type === "result" && obj.result) {
+        currentAssistantEl.textContent = obj.result;
+      }
+    } catch {
+      currentAssistantEl.textContent += chunk;
+      break;
+    }
+  }
+  scrollToBottom();
+}
+
+// ---- Events ----
+inputEl.addEventListener("input", () => {
+  inputEl.style.height = "auto";
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + "px";
 });
 
-// ---- Keyboard ----
 inputEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     send();
   }
 });
+
 sendBtn.addEventListener("click", send);
+stopBtn.addEventListener("click", stop);
 
 // ---- Helpers ----
 function addMessage(role, text) {
@@ -396,16 +560,28 @@ function addMessage(role, text) {
 }
 
 function scrollToBottom() {
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  requestAnimationFrame(() => {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  });
 }
 
 function setBusy(b) {
   busy = b;
   sendBtn.disabled = b;
-  sendBtn.style.display = b ? "none" : "block";
-  stopBtn.style.display = b ? "block" : "none";
-  statusDot.className = b ? "status-dot busy" : "status-dot";
-  statusText.textContent = b ? "Thinking..." : "Ready";
+  sendBtn.style.display = b ? "none" : "flex";
+  stopBtn.style.display = b ? "flex" : "none";
+  statusDot.classList.toggle("busy", b);
+  if (!statusDot.classList.contains("disconnected")) {
+    statusText.textContent = b ? "Thinking..." : "Ready";
+  }
+}
+
+// ---- iOS keyboard handling ----
+const vv = window.visualViewport;
+if (vv) {
+  vv.addEventListener("resize", () => {
+    document.body.style.height = vv.height + "px";
+  });
 }
 </script>
 

@@ -11,7 +11,7 @@
   "author": "leonard",
   "license": "MIT",
   "dependencies": {
-    "@anthropic-ai/claude-code": "^1.0.0"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "electron": "^33.0.0",
