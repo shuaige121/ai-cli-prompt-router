@@ -1,13 +1,18 @@
 {
   "context7": {
     "command": "npx",
-    "args": ["-y", "@upstash/context7-mcp@latest"],
+    "args": [
+      "-y",
+      "@upstash/context7-mcp@latest"
+    ],
     "env": {},
     "description": "Documentation search and library information"
   },
   "playwright": {
     "command": "npx",
-    "args": ["@playwright/mcp@latest"],
+    "args": [
+      "@playwright/mcp@latest"
+    ],
     "env": {},
     "description": "Browser automation, web scraping, and screenshots"
   }

@@ -1,0 +1,6 @@
+.git
+history
+.stfolder
+.stversions
+__pycache__
+*.pyc
