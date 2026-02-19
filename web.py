@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OpenClaw Router - Web UI
+AI CLI Prompt Router - Web UI
 查看会话历史记录的简单 web 界面。
 启动: python3 ~/router/web.py
 访问: http://localhost:8899
@@ -92,7 +92,7 @@ def render_index_page() -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenClaw Router - History</title>
+<title>AI CLI Prompt Router - History</title>
 <style>
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -112,7 +112,7 @@ tr:hover {{ background: #161b22; }}
 </head>
 <body>
 <div class="container">
-<h1>OpenClaw Router</h1>
+<h1>AI CLI Prompt Router</h1>
 <p class="subtitle">{len(entries)} sessions backed up</p>
 {"<table><tr><th>Title</th><th>Preview</th><th>Created</th><th>Updated</th><th>Size</th></tr>" + rows + "</table>" if entries else '<div class="empty">No sessions yet.</div>'}
 </div>
@@ -149,7 +149,7 @@ def render_session_page(session_id: str) -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} - OpenClaw</title>
+<title>{title} - AI CLI Prompt Router</title>
 <style>
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -206,7 +206,7 @@ class Handler(SimpleHTTPRequestHandler):
 def main():
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     server = HTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"OpenClaw Router Web UI: http://localhost:{PORT}")
+    print(f"AI CLI Prompt Router Web UI: http://localhost:{PORT}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
