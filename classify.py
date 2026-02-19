@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Claude Code UserPromptSubmit Hook - 本地意图路由器
+Claude Code Router - UserPromptSubmit Hook
 1. 正则快速匹配 / Ollama fallback 分类用户意图
 2. 按需注入上下文片段（代码规范、ML规则等）
 3. 查询 tool-gating-mcp 语义搜索相关工具

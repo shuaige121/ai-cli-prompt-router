@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0d1117">
+<title>Claude Code</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --orange: #d29922;
+  --red: #da3633;
+  --border: #30363d;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+}
+
+html, body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  height: 100%;
+  overflow: hidden;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  -webkit-app-region: drag;
+}
+
+/* ==== Login screen ==== */
+.login-screen {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.login-screen.hidden { display: none; }
+
+.login-box {
+  width: 320px;
+  max-width: 90vw;
+  padding: 32px 24px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  text-align: center;
+}
+.login-box h2 {
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.login-box p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+}
+.login-box input {
+  width: 100%;
+  padding: 12px 14px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-size: 16px;
+  margin-bottom: 12px;
+}
+.login-box input:focus { outline: none; border-color: var(--accent); }
+.login-box input::placeholder { color: var(--text-secondary); }
+.login-box .login-btn {
+  width: 100%;
+  padding: 12px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.login-box .login-btn:hover { background: #4c9aed; }
+.login-box .login-btn:disabled { opacity: 0.4; }
+.login-error {
+  color: var(--red);
+  font-size: 13px;
+  margin-top: 8px;
+  min-height: 18px;
+}
+
+/* ==== Settings panel (Electron only) ==== */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 150;
+  display: none;
+}
+.settings-overlay.open { display: flex; align-items: center; justify-content: center; }
+
+.settings-panel {
+  width: 400px;
+  max-width: 92vw;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px;
+  -webkit-app-region: no-drag;
+}
+.settings-panel h3 {
+  font-size: 17px;
+  margin-bottom: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.settings-panel h3 button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 22px;
+  cursor: pointer;
+}
+
+.setting-row {
+  margin-bottom: 14px;
+}
+.setting-row label {
+  display: block;
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 5px;
+}
+.setting-row input[type="text"],
+.setting-row input[type="password"],
+.setting-row input[type="number"] {
+  width: 100%;
+  padding: 9px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+.setting-row input:focus { outline: none; border-color: var(--accent); }
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.toggle-row span {
+  font-size: 14px;
+}
+.toggle {
+  width: 44px; height: 24px;
+  background: var(--bg-tertiary);
+  border-radius: 12px;
+  position: relative;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  transition: background 0.2s;
+}
+.toggle.on { background: var(--accent); border-color: var(--accent); }
+.toggle::after {
+  content: "";
+  position: absolute;
+  width: 18px; height: 18px;
+  background: #fff;
+  border-radius: 50%;
+  top: 2px; left: 2px;
+  transition: transform 0.2s;
+}
+.toggle.on::after { transform: translateX(20px); }
+
+.settings-save {
+  width: 100%;
+  padding: 10px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 4px;
+}
+.settings-save:hover { background: #4c9aed; }
+
+.settings-info {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 10px;
+  text-align: center;
+  min-height: 16px;
+}
+
+/* ==== Top bar ==== */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  padding-top: calc(10px + var(--safe-t));
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  -webkit-app-region: drag;
+}
+.topbar > * { -webkit-app-region: no-drag; }
+
+.logo {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.folder-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+
+.cwd-input {
+  padding: 6px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  width: 200px;
+  display: none;
+}
+.cwd-input:focus { outline: none; border-color: var(--accent); }
+.cwd-input::placeholder { color: var(--text-secondary); }
+
+.topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mode-select {
+  padding: 6px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  -webkit-appearance: none;
+}
+.mode-select:focus { outline: none; border-color: var(--accent); }
+
+.icon-btn {
+  width: 32px; height: 32px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.icon-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+
+.status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.status-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--green);
+}
+.status-dot.busy { background: var(--orange); animation: pulse 1s infinite; }
+.status-dot.disconnected { background: var(--red); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+.web-url {
+  font-size: 11px;
+  color: var(--green);
+  display: none;
+}
+
+/* ==== Connection banner ==== */
+.conn-banner {
+  padding: 6px 12px;
+  background: #3d1f1f;
+  color: #f88;
+  font-size: 12px;
+  text-align: center;
+  display: none;
+  flex-shrink: 0;
+}
+.conn-banner.show { display: block; }
+
+/* ==== Messages ==== */
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  -webkit-overflow-scrolling: touch;
+}
+.messages::-webkit-scrollbar { width: 6px; }
+.messages::-webkit-scrollbar-track { background: transparent; }
+.messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+.msg {
+  max-width: 88%;
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg.user {
+  align-self: flex-end;
+  background: #1f3a5f;
+  border: 1px solid #264a78;
+  border-bottom-right-radius: 4px;
+}
+.msg.assistant {
+  align-self: flex-start;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+.msg.error {
+  align-self: flex-start;
+  background: #3d1f1f;
+  border: 1px solid #6e3030;
+  color: #f88;
+  font-size: 13px;
+}
+.msg.system {
+  align-self: center;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  color: var(--text-secondary);
+  gap: 8px;
+  text-align: center;
+  padding: 40px 20px;
+}
+.welcome h2 { color: var(--text-primary); font-size: 22px; font-weight: 600; }
+.welcome p { font-size: 14px; }
+
+.msg pre {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+  font-size: 13px;
+  -webkit-overflow-scrolling: touch;
+}
+.msg code {
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 13px;
+}
+.msg :not(pre) > code {
+  background: var(--bg-tertiary);
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+/* ==== Input ==== */
+.input-area {
+  padding: 10px 14px;
+  padding-bottom: calc(10px + var(--safe-b));
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+
+.input-area textarea {
+  flex: 1;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 16px;
+  padding: 10px 16px;
+  resize: none;
+  min-height: 44px;
+  max-height: 160px;
+  line-height: 1.4;
+}
+.input-area textarea:focus { outline: none; border-color: var(--accent); }
+.input-area textarea::placeholder { color: var(--text-secondary); }
+
+.action-btn {
+  width: 44px; height: 44px;
+  border: none; border-radius: 50%;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: transform 0.1s;
+}
+.action-btn:active { transform: scale(0.92); }
+.send-btn { background: var(--accent); color: #fff; }
+.send-btn:disabled { opacity: 0.35; }
+.stop-btn { background: var(--red); color: #fff; display: none; }
+
+/* ==== Responsive ==== */
+@media (min-width: 768px) {
+  .msg { max-width: 75%; }
+  .input-area textarea { font-size: 14px; border-radius: 10px; max-height: 200px; }
+  .action-btn { width: 40px; height: 40px; border-radius: 8px; }
+  .cwd-input { width: 260px; }
+}
+
+@media (max-width: 480px) {
+  .topbar { gap: 6px; padding: 8px 10px; padding-top: calc(8px + var(--safe-t)); }
+  .logo { font-size: 14px; }
+  .folder-btn { max-width: 120px; font-size: 12px; padding: 5px 8px; }
+  .cwd-input { width: 120px; font-size: 12px; }
+  .mode-select { font-size: 12px; padding: 5px 8px; }
+  .messages { padding: 10px; gap: 10px; }
+  .msg { max-width: 94%; padding: 8px 12px; }
+  .web-url { display: none !important; }
+}
+</style>
+</head>
+<body>
+
+<!-- Login screen (web mode only, shown when password required) -->
+<div class="login-screen hidden" id="loginScreen">
+  <div class="login-box">
+    <h2>Claude Code</h2>
+    <p>Enter password to connect</p>
+    <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password">
+    <button class="login-btn" id="loginBtn">Connect</button>
+    <div class="login-error" id="loginError"></div>
+  </div>
+</div>
+
+<!-- Settings panel (Electron only) -->
+<div class="settings-overlay" id="settingsOverlay">
+  <div class="settings-panel" style="max-height:90vh;overflow-y:auto">
+    <h3>
+      Settings
+      <button id="settingsClose">&times;</button>
+    </h3>
+
+    <!-- Launch settings -->
+    <div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;font-weight:600">Launch</div>
+
+    <div class="setting-row">
+      <label>Claude runs via</label>
+      <select id="launchMode" style="width:100%;padding:9px 12px;background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:14px">
+        <option value="auto">Auto-detect</option>
+        <option value="native">Native (local CLI)</option>
+        <option value="wsl">WSL (Windows Subsystem for Linux)</option>
+        <option value="ssh">SSH (remote host)</option>
+      </select>
+    </div>
+
+    <div class="toggle-row" id="elevateRow" style="display:none">
+      <span>Run as Admin (UAC)</span>
+      <div class="toggle" id="elevateToggle"></div>
+    </div>
+
+    <div class="setting-row" id="wslDistroRow" style="display:none">
+      <label>WSL Distro (empty = default)</label>
+      <input type="text" id="wslDistro" placeholder="Ubuntu">
+    </div>
+
+    <div id="sshSection" style="display:none">
+      <div class="setting-row">
+        <label>SSH Host</label>
+        <input type="text" id="sshHost" placeholder="192.168.1.100">
+      </div>
+      <div class="setting-row">
+        <label>SSH User (empty = current)</label>
+        <input type="text" id="sshUser" placeholder="root">
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <label>Default Working Directory</label>
+      <input type="text" id="defaultCwd" placeholder="/home/user/project">
+    </div>
+
+    <div class="setting-row">
+      <label>Default Permission Mode</label>
+      <select id="defaultPermission" style="width:100%;padding:9px 12px;background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:14px">
+        <option value="default">Ask</option>
+        <option value="acceptEdits">Code</option>
+        <option value="plan">Plan</option>
+        <option value="dangerously-skip-permissions">Act (full access)</option>
+      </select>
+    </div>
+
+    <div style="height:1px;background:var(--border);margin:16px 0"></div>
+
+    <!-- Remote access settings -->
+    <div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;font-weight:600">Remote Access</div>
+
+    <div class="toggle-row">
+      <span>Web Server</span>
+      <div class="toggle" id="webToggle"></div>
+    </div>
+
+    <div class="setting-row">
+      <label>Port</label>
+      <input type="number" id="portInput" min="1024" max="65535" value="3456">
+    </div>
+
+    <div class="setting-row">
+      <label>Password (leave empty for no auth)</label>
+      <input type="password" id="passwordInput" placeholder="Set a password...">
+    </div>
+
+    <button class="settings-save" id="settingsSave">Save</button>
+    <div class="settings-info" id="settingsInfo"></div>
+    <div id="adminBadge" style="display:none;text-align:center;margin-top:6px;font-size:11px;color:var(--green)"></div>
+  </div>
+</div>
+
+<!-- Connection banner -->
+<div class="conn-banner" id="connBanner"></div>
+
+<!-- Top bar -->
+<div class="topbar">
+  <span class="logo">Claude Code</span>
+
+  <button class="folder-btn" id="folderBtn" title="Select project folder">
+    <span id="folderLabel">Select folder...</span>
+  </button>
+
+  <input class="cwd-input" id="cwdInput" type="text" placeholder="Working dir...">
+
+  <div class="topbar-right">
+    <select class="mode-select" id="modeSelect" title="Permission mode">
+      <option value="default">Ask</option>
+      <option value="acceptEdits">Code</option>
+      <option value="plan">Plan</option>
+      <option value="dangerously-skip-permissions">Act</option>
+    </select>
+    <div class="status">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">Ready</span>
+    </div>
+    <span class="web-url" id="webUrl"></span>
+    <button class="icon-btn" id="settingsBtn" title="Settings" style="display:none">&#9881;</button>
+  </div>
+</div>
+
+<!-- Messages -->
+<div class="messages" id="messages">
+  <div class="welcome" id="welcome">
+    <h2>Claude Code</h2>
+    <p>Select a project folder and start chatting.</p>
+    <p style="font-size:12px;color:var(--text-secondary);margin-top:4px">Powered by Claude Code CLI</p>
+  </div>
+</div>
+
+<!-- Input -->
+<div class="input-area">
+  <textarea id="input" rows="1" placeholder="Ask Claude..." enterkeyhint="send" autofocus></textarea>
+  <button class="action-btn send-btn" id="sendBtn">&#9654;</button>
+  <button class="action-btn stop-btn" id="stopBtn">&#9632;</button>
+</div>
+
+<script>
+// ==================================================================
+// Unified controller: Electron IPC vs WebSocket
+// ==================================================================
+
+const isElectron = !!(window.claude);
+
+const $ = (id) => document.getElementById(id);
+const messagesEl = $("messages");
+const welcomeEl = $("welcome");
+const inputEl = $("input");
+const sendBtn = $("sendBtn");
+const stopBtn = $("stopBtn");
+const folderBtn = $("folderBtn");
+const folderLabel = $("folderLabel");
+const cwdInput = $("cwdInput");
+const modeSelect = $("modeSelect");
+const statusDot = $("statusDot");
+const statusText = $("statusText");
+const connBanner = $("connBanner");
+const webUrlEl = $("webUrl");
+
+// Login
+const loginScreen = $("loginScreen");
+const loginPassword = $("loginPassword");
+const loginBtn = $("loginBtn");
+const loginError = $("loginError");
+
+// Settings (Electron)
+const settingsBtn = $("settingsBtn");
+const settingsOverlay = $("settingsOverlay");
+const settingsClose = $("settingsClose");
+const webToggle = $("webToggle");
+const portInput = $("portInput");
+const passwordInput = $("passwordInput");
+const settingsSave = $("settingsSave");
+const settingsInfo = $("settingsInfo");
+const launchModeEl = $("launchMode");
+const elevateToggle = $("elevateToggle");
+const elevateRow = $("elevateRow");
+const wslDistroRow = $("wslDistroRow");
+const wslDistroEl = $("wslDistro");
+const sshSection = $("sshSection");
+const sshHostEl = $("sshHost");
+const sshUserEl = $("sshUser");
+const defaultCwdEl = $("defaultCwd");
+const defaultPermissionEl = $("defaultPermission");
+const adminBadge = $("adminBadge");
+
+let busy = false;
+let currentAssistantEl = null;
+let projectFolder = null;
+let authToken = null;
+
+// ---- Init ----
+if (isElectron) {
+  initElectron();
+} else {
+  initWeb();
+}
+
+// ==================================================================
+// Electron mode
+// ==================================================================
+
+async function initElectron() {
+  folderBtn.style.display = "flex";
+  cwdInput.style.display = "none";
+  settingsBtn.style.display = "flex";
+
+  folderBtn.addEventListener("click", async () => {
+    const folder = await window.claude.selectFolder();
+    if (folder) {
+      projectFolder = folder;
+      folderLabel.textContent = folder.split(/[\\/]/).pop();
+      folderBtn.title = folder;
+    }
+  });
+
+  window.claude.onChunk(handleChunk);
+
+  // Load settings
+  const s = await window.claude.getSettings();
+  portInput.value = s.webPort;
+  passwordInput.value = s.webPassword;
+  if (s.webEnabled) webToggle.classList.add("on");
+  if (s.webUrl) {
+    webUrlEl.textContent = s.webUrl;
+    webUrlEl.style.display = "inline";
+  }
+
+  // Launch settings
+  launchModeEl.value = s.launchMode || "auto";
+  if (s.elevate) elevateToggle.classList.add("on");
+  wslDistroEl.value = s.wslDistro || "";
+  sshHostEl.value = s.sshHost || "";
+  sshUserEl.value = s.sshUser || "";
+  defaultCwdEl.value = s.defaultCwd || "";
+  defaultPermissionEl.value = s.defaultPermission || "default";
+
+  // Show admin badge
+  if (s.isAdmin) {
+    adminBadge.textContent = "Running as Administrator";
+    adminBadge.style.display = "block";
+  }
+
+  // Show/hide platform-specific options
+  if (s.platform === "win32") {
+    elevateRow.style.display = "flex";
+  }
+  updateLaunchUI();
+
+  launchModeEl.addEventListener("change", updateLaunchUI);
+  elevateToggle.addEventListener("click", () => elevateToggle.classList.toggle("on"));
+
+  function updateLaunchUI() {
+    const mode = launchModeEl.value;
+    wslDistroRow.style.display = (mode === "wsl" || (mode === "auto" && s.platform === "win32")) ? "block" : "none";
+    sshSection.style.display = mode === "ssh" ? "block" : "none";
+  }
+
+  // Settings panel events
+  settingsBtn.addEventListener("click", () => settingsOverlay.classList.add("open"));
+  settingsClose.addEventListener("click", () => settingsOverlay.classList.remove("open"));
+  settingsOverlay.addEventListener("click", (e) => {
+    if (e.target === settingsOverlay) settingsOverlay.classList.remove("open");
+  });
+
+  webToggle.addEventListener("click", () => webToggle.classList.toggle("on"));
+
+  settingsSave.addEventListener("click", async () => {
+    const result = await window.claude.saveSettings({
+      webEnabled: webToggle.classList.contains("on"),
+      webPort: portInput.value,
+      webPassword: passwordInput.value,
+      launchMode: launchModeEl.value,
+      elevate: elevateToggle.classList.contains("on"),
+      wslDistro: wslDistroEl.value,
+      sshHost: sshHostEl.value,
+      sshUser: sshUserEl.value,
+      defaultCwd: defaultCwdEl.value,
+      defaultPermission: defaultPermissionEl.value,
+    });
+
+    if (result.webUrl) {
+      webUrlEl.textContent = result.webUrl;
+      webUrlEl.style.display = "inline";
+      settingsInfo.textContent = "Saved! Remote: " + result.webUrl;
+      settingsInfo.style.color = "var(--green)";
+    } else {
+      webUrlEl.style.display = "none";
+      settingsInfo.textContent = "Saved.";
+      settingsInfo.style.color = "var(--green)";
+    }
+    setTimeout(() => { settingsInfo.textContent = ""; }, 3000);
+  });
+}
+
+// ==================================================================
+// Web/mobile mode
+// ==================================================================
+
+let ws = null;
+let reconnectTimer = null;
+let reconnectDelay = 1000;
+
+async function initWeb() {
+  folderBtn.style.display = "none";
+  cwdInput.style.display = "block";
+
+  // Restore saved token
+  authToken = sessionStorage.getItem("claude-token");
+
+  // Check if auth is needed
+  try {
+    const res = await fetch("/auth-status");
+    const { needsAuth } = await res.json();
+    if (needsAuth && !authToken) {
+      showLogin();
+      return;
+    }
+  } catch {
+    // Server might be down, try connecting anyway
+  }
+
+  connectWebSocket();
+}
+
+function showLogin() {
+  loginScreen.classList.remove("hidden");
+  loginPassword.focus();
+
+  loginBtn.addEventListener("click", doLogin);
+  loginPassword.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doLogin();
+  });
+}
+
+async function doLogin() {
+  loginBtn.disabled = true;
+  loginError.textContent = "";
+
+  try {
+    const res = await fetch("/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: loginPassword.value }),
+    });
+    const data = await res.json();
+
+    if (data.ok) {
+      authToken = data.token;
+      sessionStorage.setItem("claude-token", authToken);
+      loginScreen.classList.add("hidden");
+      connectWebSocket();
+    } else {
+      loginError.textContent = data.error || "Wrong password";
+    }
+  } catch {
+    loginError.textContent = "Connection failed";
+  }
+
+  loginBtn.disabled = false;
+}
+
+function connectWebSocket() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${proto}//${location.host}`);
+
+  ws.onopen = () => {
+    connBanner.classList.remove("show");
+    statusDot.classList.remove("disconnected");
+    reconnectDelay = 1000;
+
+    // Authenticate WebSocket
+    if (authToken) {
+      ws.send(JSON.stringify({ type: "auth", token: authToken }));
+    } else {
+      ws.send(JSON.stringify({ type: "auth" }));
+    }
+  };
+
+  ws.onclose = () => {
+    connBanner.textContent = "Disconnected - reconnecting...";
+    connBanner.classList.add("show");
+    statusDot.classList.add("disconnected");
+    statusText.textContent = "Offline";
+    scheduleReconnect();
+  };
+
+  ws.onerror = () => ws.close();
+
+  ws.onmessage = (event) => {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+
+    if (msg.type === "auth") {
+      if (!msg.ok) {
+        // Token expired or invalid, show login
+        sessionStorage.removeItem("claude-token");
+        authToken = null;
+        ws.close();
+        showLogin();
+      }
+      return;
+    }
+
+    if (msg.type === "error" && msg.error === "Not authenticated") {
+      sessionStorage.removeItem("claude-token");
+      authToken = null;
+      ws.close();
+      showLogin();
+      return;
+    }
+
+    if (msg.type === "chunk") {
+      handleChunk(msg.data);
+    } else if (msg.type === "done") {
+      if (currentAssistantEl && !currentAssistantEl.textContent.trim()) {
+        currentAssistantEl.textContent = msg.result || "(no response)";
+      }
+      if (msg.error) addMessage("error", msg.error);
+      currentAssistantEl = null;
+      setBusy(false);
+    } else if (msg.type === "status") {
+      setBusy(msg.busy);
+    } else if (msg.type === "stopped") {
+      if (currentAssistantEl && !currentAssistantEl.textContent.trim()) {
+        currentAssistantEl.textContent = "(stopped)";
+      }
+      currentAssistantEl = null;
+      setBusy(false);
+    }
+  };
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    reconnectDelay = Math.min(reconnectDelay * 1.5, 10000);
+    connectWebSocket();
+  }, reconnectDelay);
+}
+
+// ==================================================================
+// Chat logic (shared)
+// ==================================================================
+
+async function send() {
+  const text = inputEl.value.trim();
+  if (!text || busy) return;
+
+  if (welcomeEl && welcomeEl.parentNode) welcomeEl.remove();
+
+  addMessage("user", text);
+  inputEl.value = "";
+  inputEl.style.height = "auto";
+
+  setBusy(true);
+  currentAssistantEl = addMessage("assistant", "");
+
+  const cwd = isElectron ? projectFolder : (cwdInput.value.trim() || null);
+  const permissionMode = modeSelect.value;
+
+  if (isElectron) {
+    const { result, error } = await window.claude.sendMessage({
+      message: text, cwd, permissionMode,
+    });
+    if (currentAssistantEl && !currentAssistantEl.textContent.trim()) {
+      currentAssistantEl.textContent = result || "(no response)";
+    }
+    if (error) addMessage("error", error);
+    currentAssistantEl = null;
+    setBusy(false);
+  } else if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: "send", message: text, cwd, permissionMode,
+    }));
+  }
+}
+
+async function stop() {
+  if (isElectron) {
+    await window.claude.stopClaude();
+  } else if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "stop" }));
+  }
+  if (currentAssistantEl && !currentAssistantEl.textContent.trim()) {
+    currentAssistantEl.textContent = "(stopped)";
+  }
+  currentAssistantEl = null;
+  setBusy(false);
+}
+
+function handleChunk(chunk) {
+  if (!currentAssistantEl) return;
+
+  const lines = chunk.split("\n").filter(Boolean);
+  for (const line of lines) {
+    try {
+      const obj = JSON.parse(line);
+      if (obj.type === "assistant" && obj.message?.content) {
+        for (const block of obj.message.content) {
+          if (block.type === "text") {
+            currentAssistantEl.textContent += block.text;
+          }
+        }
+      } else if (obj.type === "result" && obj.result) {
+        currentAssistantEl.textContent = obj.result;
+      }
+    } catch {
+      currentAssistantEl.textContent += chunk;
+      break;
+    }
+  }
+  scrollToBottom();
+}
+
+// ==== Events ====
+inputEl.addEventListener("input", () => {
+  inputEl.style.height = "auto";
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + "px";
+});
+
+inputEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+
+sendBtn.addEventListener("click", send);
+stopBtn.addEventListener("click", stop);
+
+// ==== Helpers ====
+function addMessage(role, text) {
+  const el = document.createElement("div");
+  el.className = `msg ${role}`;
+  el.textContent = text;
+  messagesEl.appendChild(el);
+  scrollToBottom();
+  return el;
+}
+
+function scrollToBottom() {
+  requestAnimationFrame(() => {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  });
+}
+
+function setBusy(b) {
+  busy = b;
+  sendBtn.disabled = b;
+  sendBtn.style.display = b ? "none" : "flex";
+  stopBtn.style.display = b ? "flex" : "none";
+  statusDot.classList.toggle("busy", b);
+  if (!statusDot.classList.contains("disconnected")) {
+    statusText.textContent = b ? "Thinking..." : "Ready";
+  }
+}
+
+// ==== iOS keyboard ====
+const vv = window.visualViewport;
+if (vv) {
+  vv.addEventListener("resize", () => {
+    document.body.style.height = vv.height + "px";
+  });
+}
+</script>
+
+</body>
+</html>
