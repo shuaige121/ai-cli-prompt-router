@@ -1,6 +1,6 @@
-# OpenClaw Router
+# Claude Code Router
 
-AI CLI 工具的本地智能路由器。用 Ollama 小模型分类用户意图，按需注入上下文和 MCP 工具，保持大模型上下文干净。
+Claude Code 的本地智能路由器。用 Ollama 小模型分类用户意图，按需注入上下文和 MCP 工具，保持大模型上下文干净。
 
 ## 架构
 
@@ -54,7 +54,7 @@ curl -fsSL https://ollama.com/install.sh | sh
 ollama pull qwen2.5:1.5b
 
 # 2. 克隆本项目
-git clone git@github.com:shuaige121/openclaw-router.git ~/router
+git clone git@github.com:shuaige121/claude-code-router.git ~/router
 
 # 3. 配置 Claude Code hooks (~/.claude/settings.json)
 # 见下方配置示例
