@@ -41,6 +41,177 @@ body {
   -webkit-app-region: drag;
 }
 
+/* ==== Login screen ==== */
+.login-screen {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.login-screen.hidden { display: none; }
+
+.login-box {
+  width: 320px;
+  max-width: 90vw;
+  padding: 32px 24px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  text-align: center;
+}
+.login-box h2 {
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.login-box p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+}
+.login-box input {
+  width: 100%;
+  padding: 12px 14px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-size: 16px;
+  margin-bottom: 12px;
+}
+.login-box input:focus { outline: none; border-color: var(--accent); }
+.login-box input::placeholder { color: var(--text-secondary); }
+.login-box .login-btn {
+  width: 100%;
+  padding: 12px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.login-box .login-btn:hover { background: #4c9aed; }
+.login-box .login-btn:disabled { opacity: 0.4; }
+.login-error {
+  color: var(--red);
+  font-size: 13px;
+  margin-top: 8px;
+  min-height: 18px;
+}
+
+/* ==== Settings panel (Electron only) ==== */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 150;
+  display: none;
+}
+.settings-overlay.open { display: flex; align-items: center; justify-content: center; }
+
+.settings-panel {
+  width: 400px;
+  max-width: 92vw;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px;
+  -webkit-app-region: no-drag;
+}
+.settings-panel h3 {
+  font-size: 17px;
+  margin-bottom: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.settings-panel h3 button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 22px;
+  cursor: pointer;
+}
+
+.setting-row {
+  margin-bottom: 14px;
+}
+.setting-row label {
+  display: block;
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 5px;
+}
+.setting-row input[type="text"],
+.setting-row input[type="password"],
+.setting-row input[type="number"] {
+  width: 100%;
+  padding: 9px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+.setting-row input:focus { outline: none; border-color: var(--accent); }
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.toggle-row span {
+  font-size: 14px;
+}
+.toggle {
+  width: 44px; height: 24px;
+  background: var(--bg-tertiary);
+  border-radius: 12px;
+  position: relative;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  transition: background 0.2s;
+}
+.toggle.on { background: var(--accent); border-color: var(--accent); }
+.toggle::after {
+  content: "";
+  position: absolute;
+  width: 18px; height: 18px;
+  background: #fff;
+  border-radius: 50%;
+  top: 2px; left: 2px;
+  transition: transform 0.2s;
+}
+.toggle.on::after { transform: translateX(20px); }
+
+.settings-save {
+  width: 100%;
+  padding: 10px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 4px;
+}
+.settings-save:hover { background: #4c9aed; }
+
+.settings-info {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 10px;
+  text-align: center;
+  min-height: 16px;
+}
+
 /* ==== Top bar ==== */
 .topbar {
   display: flex;
@@ -80,7 +251,6 @@ body {
 }
 .folder-btn:hover { border-color: var(--accent); color: var(--text-primary); }
 
-/* In browser mode, show a text input for cwd instead */
 .cwd-input {
   padding: 6px 12px;
   background: var(--bg-tertiary);
@@ -113,6 +283,20 @@ body {
 }
 .mode-select:focus { outline: none; border-color: var(--accent); }
 
+.icon-btn {
+  width: 32px; height: 32px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.icon-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+
 .status {
   font-size: 12px;
   color: var(--text-secondary);
@@ -130,11 +314,11 @@ body {
 
 .web-url {
   font-size: 11px;
-  color: var(--text-secondary);
+  color: var(--green);
   display: none;
 }
 
-/* ==== Connection banner (web only) ==== */
+/* ==== Connection banner ==== */
 .conn-banner {
   padding: 6px 12px;
   background: #3d1f1f;
@@ -208,7 +392,6 @@ body {
 .welcome h2 { color: var(--text-primary); font-size: 22px; font-weight: 600; }
 .welcome p { font-size: 14px; }
 
-/* Code blocks */
 .msg pre {
   background: var(--bg-primary);
   border: 1px solid var(--border);
@@ -277,7 +460,7 @@ body {
 
 /* ==== Responsive ==== */
 @media (min-width: 768px) {
-  .msg { max-width: 75%; font-size: 14px; }
+  .msg { max-width: 75%; }
   .input-area textarea { font-size: 14px; border-radius: 10px; max-height: 200px; }
   .action-btn { width: 40px; height: 40px; border-radius: 8px; }
   .cwd-input { width: 260px; }
@@ -297,19 +480,56 @@ body {
 </head>
 <body>
 
-<!-- Connection banner (web mode) -->
+<!-- Login screen (web mode only, shown when password required) -->
+<div class="login-screen hidden" id="loginScreen">
+  <div class="login-box">
+    <h2>Claude Code</h2>
+    <p>Enter password to connect</p>
+    <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password">
+    <button class="login-btn" id="loginBtn">Connect</button>
+    <div class="login-error" id="loginError"></div>
+  </div>
+</div>
+
+<!-- Settings panel (Electron only) -->
+<div class="settings-overlay" id="settingsOverlay">
+  <div class="settings-panel">
+    <h3>
+      Settings
+      <button id="settingsClose">&times;</button>
+    </h3>
+
+    <div class="toggle-row">
+      <span>Remote Access (Web Server)</span>
+      <div class="toggle" id="webToggle"></div>
+    </div>
+
+    <div class="setting-row">
+      <label>Port</label>
+      <input type="number" id="portInput" min="1024" max="65535" value="3456">
+    </div>
+
+    <div class="setting-row">
+      <label>Password (leave empty for no auth)</label>
+      <input type="password" id="passwordInput" placeholder="Set a password...">
+    </div>
+
+    <button class="settings-save" id="settingsSave">Save</button>
+    <div class="settings-info" id="settingsInfo"></div>
+  </div>
+</div>
+
+<!-- Connection banner -->
 <div class="conn-banner" id="connBanner"></div>
 
 <!-- Top bar -->
 <div class="topbar">
   <span class="logo">Claude Code</span>
 
-  <!-- Electron: folder picker button -->
   <button class="folder-btn" id="folderBtn" title="Select project folder">
     <span id="folderLabel">Select folder...</span>
   </button>
 
-  <!-- Web: text input for path -->
   <input class="cwd-input" id="cwdInput" type="text" placeholder="Working dir...">
 
   <div class="topbar-right">
@@ -324,6 +544,7 @@ body {
       <span id="statusText">Ready</span>
     </div>
     <span class="web-url" id="webUrl"></span>
+    <button class="icon-btn" id="settingsBtn" title="Settings" style="display:none">&#9881;</button>
   </div>
 </div>
 
@@ -345,7 +566,7 @@ body {
 
 <script>
 // ==================================================================
-// Unified controller: auto-detects Electron IPC vs WebSocket
+// Unified controller: Electron IPC vs WebSocket
 // ==================================================================
 
 const isElectron = !!(window.claude);
@@ -365,15 +586,42 @@ const statusText = $("statusText");
 const connBanner = $("connBanner");
 const webUrlEl = $("webUrl");
 
+// Login
+const loginScreen = $("loginScreen");
+const loginPassword = $("loginPassword");
+const loginBtn = $("loginBtn");
+const loginError = $("loginError");
+
+// Settings (Electron)
+const settingsBtn = $("settingsBtn");
+const settingsOverlay = $("settingsOverlay");
+const settingsClose = $("settingsClose");
+const webToggle = $("webToggle");
+const portInput = $("portInput");
+const passwordInput = $("passwordInput");
+const settingsSave = $("settingsSave");
+const settingsInfo = $("settingsInfo");
+
 let busy = false;
 let currentAssistantEl = null;
 let projectFolder = null;
+let authToken = null;
 
-// ---- Mode-specific setup ----
+// ---- Init ----
 if (isElectron) {
-  // Show folder button, hide cwd input
+  initElectron();
+} else {
+  initWeb();
+}
+
+// ==================================================================
+// Electron mode
+// ==================================================================
+
+async function initElectron() {
   folderBtn.style.display = "flex";
   cwdInput.style.display = "none";
+  settingsBtn.style.display = "flex";
 
   folderBtn.addEventListener("click", async () => {
     const folder = await window.claude.selectFolder();
@@ -384,27 +632,113 @@ if (isElectron) {
     }
   });
 
-  // Show web access URL
-  window.claude.getWebUrl().then((url) => {
-    if (url) {
-      webUrlEl.textContent = url;
-      webUrlEl.style.display = "inline";
-    }
+  window.claude.onChunk(handleChunk);
+
+  // Load settings
+  const s = await window.claude.getSettings();
+  portInput.value = s.webPort;
+  passwordInput.value = s.webPassword;
+  if (s.webEnabled) webToggle.classList.add("on");
+  if (s.webUrl) {
+    webUrlEl.textContent = s.webUrl;
+    webUrlEl.style.display = "inline";
+  }
+
+  // Settings panel events
+  settingsBtn.addEventListener("click", () => settingsOverlay.classList.add("open"));
+  settingsClose.addEventListener("click", () => settingsOverlay.classList.remove("open"));
+  settingsOverlay.addEventListener("click", (e) => {
+    if (e.target === settingsOverlay) settingsOverlay.classList.remove("open");
   });
 
-  // Stream listener
-  window.claude.onChunk(handleChunk);
-} else {
-  // Browser / mobile mode: show cwd input, hide folder button
-  folderBtn.style.display = "none";
-  cwdInput.style.display = "block";
-  connectWebSocket();
+  webToggle.addEventListener("click", () => webToggle.classList.toggle("on"));
+
+  settingsSave.addEventListener("click", async () => {
+    const result = await window.claude.saveSettings({
+      webEnabled: webToggle.classList.contains("on"),
+      webPort: portInput.value,
+      webPassword: passwordInput.value,
+    });
+
+    if (result.webUrl) {
+      webUrlEl.textContent = result.webUrl;
+      webUrlEl.style.display = "inline";
+      settingsInfo.textContent = "Saved! Remote: " + result.webUrl;
+      settingsInfo.style.color = "var(--green)";
+    } else {
+      webUrlEl.style.display = "none";
+      settingsInfo.textContent = "Saved. Remote access disabled.";
+      settingsInfo.style.color = "var(--text-secondary)";
+    }
+  });
 }
 
-// ---- WebSocket (browser mode) ----
+// ==================================================================
+// Web/mobile mode
+// ==================================================================
+
 let ws = null;
 let reconnectTimer = null;
 let reconnectDelay = 1000;
+
+async function initWeb() {
+  folderBtn.style.display = "none";
+  cwdInput.style.display = "block";
+
+  // Restore saved token
+  authToken = sessionStorage.getItem("claude-token");
+
+  // Check if auth is needed
+  try {
+    const res = await fetch("/auth-status");
+    const { needsAuth } = await res.json();
+    if (needsAuth && !authToken) {
+      showLogin();
+      return;
+    }
+  } catch {
+    // Server might be down, try connecting anyway
+  }
+
+  connectWebSocket();
+}
+
+function showLogin() {
+  loginScreen.classList.remove("hidden");
+  loginPassword.focus();
+
+  loginBtn.addEventListener("click", doLogin);
+  loginPassword.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doLogin();
+  });
+}
+
+async function doLogin() {
+  loginBtn.disabled = true;
+  loginError.textContent = "";
+
+  try {
+    const res = await fetch("/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: loginPassword.value }),
+    });
+    const data = await res.json();
+
+    if (data.ok) {
+      authToken = data.token;
+      sessionStorage.setItem("claude-token", authToken);
+      loginScreen.classList.add("hidden");
+      connectWebSocket();
+    } else {
+      loginError.textContent = data.error || "Wrong password";
+    }
+  } catch {
+    loginError.textContent = "Connection failed";
+  }
+
+  loginBtn.disabled = false;
+}
 
 function connectWebSocket() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -414,6 +748,13 @@ function connectWebSocket() {
     connBanner.classList.remove("show");
     statusDot.classList.remove("disconnected");
     reconnectDelay = 1000;
+
+    // Authenticate WebSocket
+    if (authToken) {
+      ws.send(JSON.stringify({ type: "auth", token: authToken }));
+    } else {
+      ws.send(JSON.stringify({ type: "auth" }));
+    }
   };
 
   ws.onclose = () => {
@@ -429,6 +770,25 @@ function connectWebSocket() {
   ws.onmessage = (event) => {
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
+
+    if (msg.type === "auth") {
+      if (!msg.ok) {
+        // Token expired or invalid, show login
+        sessionStorage.removeItem("claude-token");
+        authToken = null;
+        ws.close();
+        showLogin();
+      }
+      return;
+    }
+
+    if (msg.type === "error" && msg.error === "Not authenticated") {
+      sessionStorage.removeItem("claude-token");
+      authToken = null;
+      ws.close();
+      showLogin();
+      return;
+    }
 
     if (msg.type === "chunk") {
       handleChunk(msg.data);
@@ -460,7 +820,10 @@ function scheduleReconnect() {
   }, reconnectDelay);
 }
 
-// ---- Send message ----
+// ==================================================================
+// Chat logic (shared)
+// ==================================================================
+
 async function send() {
   const text = inputEl.value.trim();
   if (!text || busy) return;
@@ -494,7 +857,6 @@ async function send() {
   }
 }
 
-// ---- Stop ----
 async function stop() {
   if (isElectron) {
     await window.claude.stopClaude();
@@ -508,7 +870,6 @@ async function stop() {
   setBusy(false);
 }
 
-// ---- Stream handler ----
 function handleChunk(chunk) {
   if (!currentAssistantEl) return;
 
@@ -533,7 +894,7 @@ function handleChunk(chunk) {
   scrollToBottom();
 }
 
-// ---- Events ----
+// ==== Events ====
 inputEl.addEventListener("input", () => {
   inputEl.style.height = "auto";
   inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + "px";
@@ -549,7 +910,7 @@ inputEl.addEventListener("keydown", (e) => {
 sendBtn.addEventListener("click", send);
 stopBtn.addEventListener("click", stop);
 
-// ---- Helpers ----
+// ==== Helpers ====
 function addMessage(role, text) {
   const el = document.createElement("div");
   el.className = `msg ${role}`;
@@ -576,7 +937,7 @@ function setBusy(b) {
   }
 }
 
-// ---- iOS keyboard handling ----
+// ==== iOS keyboard ====
 const vv = window.visualViewport;
 if (vv) {
   vv.addEventListener("resize", () => {
