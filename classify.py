@@ -1,269 +1,298 @@
 #!/usr/bin/env python3
 """
-Claude Code UserPromptSubmit Hook - 本地意图路由器
-1. 正则快速匹配 / Ollama fallback 分类用户意图
-2. 按需注入上下文片段（代码规范、ML规则等）
-3. 查询 tool-gating-mcp 语义搜索相关工具
+Claude Code UserPromptSubmit Hook - 语义检索路由器
+1. 先做语义检索，选出最相关 context 文件
+2. 去掉检索内容中的命令和代码，写入临时 markdown
+3. 用 LoRA 小模型做 prompt 去噪
+4. 把 markdown 路径发给 LLM，用于替换原话中的占位符
 """
 
+import hashlib
 import json
+import math
 import os
 import re
 import sys
+import tempfile
 import urllib.request
-import time
+from datetime import datetime
+from pathlib import Path
 
 DEBUG = os.environ.get("ROUTER_DEBUG", "").lower() in ("1", "true", "yes")
 
-def debug(msg: str):
-    """Print debug message to stderr (never contaminates stdout JSON)."""
-    if DEBUG:
-        print(f"[router] {msg}", file=sys.stderr)
+ROUTER_DIR = Path(__file__).resolve().parent
+CONTEXTS_DIR = ROUTER_DIR / "contexts"
+TEMP_ROOT = Path(os.environ.get("ROUTER_TEMP_DIR", os.path.join(tempfile.gettempdir(), "ai-cli-prompt-router")))
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "qwen2.5:1.5b"
-OLLAMA_TIMEOUT = 5
+OLLAMA_GENERATE_URL = os.environ.get("ROUTER_OLLAMA_GENERATE_URL", "http://localhost:11434/api/generate")
+OLLAMA_EMBED_URL = os.environ.get("ROUTER_OLLAMA_EMBED_URL", "http://localhost:11434/api/embeddings")
+OLLAMA_TIMEOUT = float(os.environ.get("ROUTER_OLLAMA_TIMEOUT", "8"))
 
-TOOL_GATING_URL = "http://localhost:8000/api/tools/discover"
-TOOL_GATING_TIMEOUT = 5
-MAX_TOOLS = 3
+EMBED_MODEL = os.environ.get("ROUTER_EMBED_MODEL", "nomic-embed-text")
+DENOISE_MODEL = os.environ.get("ROUTER_DENOISE_MODEL", "qwen2.5:1.5b")
 
-CONTEXTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "contexts")
+TOP_K = int(os.environ.get("ROUTER_TOP_K", "3"))
+MIN_SCORE = float(os.environ.get("ROUTER_MIN_SCORE", "0.12"))
+PLACEHOLDER = os.environ.get("ROUTER_CONTEXT_PLACEHOLDER", "{{CONTEXT_MD_PATH}}")
 
-# ============================================================
-# 规则表: (正则, tool-gating搜索词, 要加载的上下文片段列表)
-# ============================================================
+SUPPORTED_EXTENSIONS = {".md", ".txt"}
+CODE_FENCE_RE = re.compile(r"```[\s\S]*?```", re.M)
+INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+COMMAND_LINE_RE = re.compile(
+    r"^(?:(?:\$|#!|>>>)\s*)?(?:sudo\s+)?(?:python3?|pip3?|npm|pnpm|yarn|npx|git|curl|wget|bash|sh|node|docker|kubectl|make|cmake|go|cargo)\b",
+    re.I,
+)
 
-# 注意: 中文字符前后 \b 不生效，含中文的模式不用 \b
-RULES: list[tuple[re.Pattern, str, list[str]]] = [
-    # Deck / PPT — 优先匹配，避免被其他规则截走
-    (re.compile(r"(deck|ppt|幻灯片|演示文稿|presentation|slides?|keynote)", re.I),
-     "", ["work", "deck"]),
+DENOISE_SYSTEM_PROMPT = (
+    "你是一个用户需求去噪器。"
+    "请删除客套话、重复描述、情绪化表达，只保留可执行目标、关键约束、实体名和占位符。"
+    "保留原语言，输出单段纯文本，不要解释。"
+)
 
-    # 历史记录
-    (re.compile(r"(历史记录|聊天记录|之前的对话|上次聊|history|previous.?session|past.?chat)", re.I),
-     "", ["history"]),
-
-    (re.compile(r"\b(git\s|commit|push|pull|merge|rebase|branch|PR|pull\s*request|issue|github|gh\s)", re.I),
-     "git version control", ["work"]),
-
-    (re.compile(r"(浏览器|browser|playwright|selenium|爬虫|scrape|crawl|网页|webpage|截图|screenshot)", re.I),
-     "browser automation web scraping screenshot", ["work"]),
-
-    (re.compile(r"(sql|database|数据库|postgres|mysql|sqlite|supabase|mongodb|redis)", re.I),
-     "database query", ["work", "code"]),
-
-    (re.compile(r"(文件|file|目录|directory|folder|读取|写入|创建文件|删除文件)", re.I),
-     "file read write filesystem", ["work"]),
-
-    (re.compile(r"\b(api|http|rest|graphql|endpoint|curl|fetch|webhook)\b", re.I),
-     "api http request", ["work", "code"]),
-
-    (re.compile(r"(docker|container|容器|k8s|kubernetes|deploy|部署|nginx|systemd)", re.I),
-     "devops deployment container", ["work"]),
-
-    (re.compile(r"(搜索|search|查找|find|grep|文档|documentation|library|框架|framework)", re.I),
-     "search documentation code library", ["work"]),
-
-    (re.compile(r"(test|测试|pytest|jest|unittest|spec|coverage)", re.I),
-     "testing", ["work", "code"]),
-
-    (re.compile(r"(模型|model|train|训练|inference|推理|torch|tensorflow|cuda|gpu|深度学习|deep.?learn)", re.I),
-     "machine learning model training", ["work", "ml", "code"]),
-
-    # 通用编程 — 兜底，不需要 MCP
-    (re.compile(r"(函数|function|class|类|变量|variable|代码|code|编程|program|写一个|实现|implement|重构|refactor)", re.I),
-     "", ["work", "code"]),
+NOISE_PATTERNS = [
+    r"(?:^|[\s，。！!？?])请(?:问|帮忙|你)?",
+    r"(?:^|[\s，。！!？?])麻烦(?:你)?",
+    r"(?:^|[\s，。！!？?])帮我(?:一下|处理一下|看一下)?",
+    r"(?:^|[\s，。！!？?])谢谢(?:你)?",
+    r"(?:^|[\s，。！!？?])辛苦了",
+    r"\b(?:please|pls|kindly|thank you|thanks)\b",
 ]
 
 
-def regex_match(prompt: str) -> tuple[str, list[str]]:
-    """正则匹配，返回 (tool-gating搜索词, 上下文片段列表)"""
-    for pattern, query, contexts in RULES:
-        if pattern.search(prompt):
-            return query, contexts
-    return "", []
+def debug(msg: str) -> None:
+    if DEBUG:
+        print(f"[router] {msg}", file=sys.stderr)
 
 
-# ============================================================
-# 上下文片段加载
-# ============================================================
-
-HISTORY_INDEX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "history", "index.json")
-
-
-def load_contexts(names: list[str]) -> str:
-    """加载上下文片段：静态 txt 或动态生成"""
-    parts = []
-    for name in names:
-        if name == "history":
-            parts.append(_load_history_context())
-            continue
-        path = os.path.join(CONTEXTS_DIR, f"{name}.txt")
-        try:
-            with open(path) as f:
-                parts.append(f.read().strip())
-        except FileNotFoundError:
-            pass
-    return "\n".join(p for p in parts if p)
-
-
-def _load_history_context() -> str:
-    """动态生成历史记录上下文"""
-    try:
-        with open(HISTORY_INDEX) as f:
-            index = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return "[历史记录] 暂无备份记录。"
-
-    if not index:
-        return "[历史记录] 暂无备份记录。"
-
-    entries = sorted(index.values(), key=lambda x: x.get("updated", ""), reverse=True)
-    lines = [f"[历史记录] 共 {len(entries)} 条会话备份，存储在 ~/router/history/："]
-    for e in entries[:10]:
-        title = e.get("title", "untitled")
-        created = e.get("created", "?")[:16]
-        preview = " / ".join(e.get("first_messages", [])[:2])[:60]
-        path = e.get("path", "")
-        lines.append(f"- [{created}] {title} — {preview}  ({os.path.basename(path)})")
-
-    lines.append("用 Read 工具读取对应 .jsonl 文件可查看完整对话。")
-    return "\n".join(lines)
-
-
-# ============================================================
-# Ollama 意图提取（fallback）
-# ============================================================
-
-OLLAMA_SYSTEM = """分析用户输入，输出 JSON:
-{"query": "英文搜索关键词(用于查找MCP工具，如无需工具则为空)", "contexts": ["需要的上下文，可选: work, code, ml"]}
-
-规则:
-- 任何需要执行任务的 → contexts 加 "work"
-- 写代码/编程相关 → contexts 加 "work" 和 "code"
-- AI/ML/深度学习 → contexts 加 "work", "ml", "code"
-- 闲聊/问答 → query 为空, contexts 为空
-
-例如:
-- "帮我看下这个网页" → {"query": "browser navigate webpage", "contexts": ["work"]}
-- "写个排序函数" → {"query": "", "contexts": ["work", "code"]}
-- "训练一个分类模型" → {"query": "machine learning training", "contexts": ["work", "ml", "code"]}
-- "你好" → {"query": "", "contexts": []}"""
-
-
-def ollama_classify(prompt: str) -> tuple[str, list[str]]:
-    payload = json.dumps({
-        "model": OLLAMA_MODEL,
-        "prompt": f"用户输入：{prompt}",
-        "system": OLLAMA_SYSTEM,
-        "format": "json",
-        "stream": False,
-        "options": {"temperature": 0.1, "num_predict": 80},
-    }).encode()
-
+def post_json(url: str, payload: dict, timeout: float) -> dict | None:
     req = urllib.request.Request(
-        OLLAMA_URL, data=payload,
+        url,
+        data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT) as resp:
-            result = json.loads(resp.read())
-            parsed = json.loads(result.get("response", ""))
-            return parsed.get("query", ""), parsed.get("contexts", [])
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read())
     except Exception as e:
-        debug(f"ollama error: {e}")
-        return "", ["work"]
-
-
-# ============================================================
-# tool-gating 查询
-# ============================================================
-
-def discover_tools(query: str) -> list[dict] | None:
-    if not query:
-        return None
-    payload = json.dumps({"query": query, "limit": MAX_TOOLS}).encode()
-    req = urllib.request.Request(
-        TOOL_GATING_URL, data=payload,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=TOOL_GATING_TIMEOUT) as resp:
-            result = json.loads(resp.read())
-            return result.get("tools", [])
-    except Exception:
+        debug(f"http error ({url}): {e}")
         return None
 
 
-def format_tools_context(tools: list[dict]) -> str:
-    if not tools:
-        return ""
-    lines = []
-    for t in tools:
-        if t.get("score", 0) < 0.15:
+def embed_text(text: str) -> list[float] | None:
+    payload = {"model": EMBED_MODEL, "prompt": text[:4000]}
+    result = post_json(OLLAMA_EMBED_URL, payload, timeout=OLLAMA_TIMEOUT)
+    if not result:
+        return None
+    vec = result.get("embedding")
+    if isinstance(vec, list) and vec:
+        return [float(x) for x in vec]
+    return None
+
+
+def cosine_similarity(v1: list[float], v2: list[float]) -> float:
+    dot = sum(a * b for a, b in zip(v1, v2))
+    n1 = math.sqrt(sum(a * a for a in v1))
+    n2 = math.sqrt(sum(b * b for b in v2))
+    if n1 == 0.0 or n2 == 0.0:
+        return 0.0
+    return dot / (n1 * n2)
+
+
+def tokenize(text: str) -> list[str]:
+    return re.findall(r"[\u4e00-\u9fff]+|[a-zA-Z0-9_]+", text.lower())
+
+
+def lexical_score(query: str, doc: str) -> float:
+    q = set(tokenize(query))
+    d = set(tokenize(doc))
+    if not q or not d:
+        return 0.0
+    return len(q & d) / len(q)
+
+
+def list_context_files() -> list[Path]:
+    if not CONTEXTS_DIR.exists():
+        return []
+    files = []
+    for p in sorted(CONTEXTS_DIR.iterdir()):
+        if not p.is_file():
             continue
-        lines.append(f"- {t['name']} (server: {t.get('server', '?')}): {t.get('description', '')}")
-    if not lines:
-        return ""
-    return "[可用 MCP 工具]\n" + "\n".join(lines) + "\n通过 tool-gating 的 execute_tool 调用。"
+        if p.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            continue
+        files.append(p)
+    return files
 
 
-# ============================================================
-# Main
-# ============================================================
+def semantic_retrieve(query: str) -> list[dict]:
+    files = list_context_files()
+    if not files:
+        return []
 
-def main():
+    query_vec = embed_text(query)
+    rows: list[dict] = []
+
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
+        if not text:
+            continue
+
+        score_lex = lexical_score(query, text)
+        score = score_lex
+
+        if query_vec:
+            doc_vec = embed_text(text)
+            if doc_vec:
+                score_sem = cosine_similarity(query_vec, doc_vec)
+                score = 0.8 * score_sem + 0.2 * score_lex
+
+        rows.append({"path": path, "text": text, "score": score})
+
+    if not rows:
+        return []
+
+    rows.sort(key=lambda x: x["score"], reverse=True)
+    picked = [r for r in rows if r["score"] >= MIN_SCORE][:TOP_K]
+    if not picked:
+        picked = rows[:1]
+    return picked
+
+
+def strip_commands_and_code(text: str) -> str:
+    no_fences = CODE_FENCE_RE.sub("", text)
+    no_inline_code = INLINE_CODE_RE.sub("", no_fences)
+
+    cleaned: list[str] = []
+    for line in no_inline_code.splitlines():
+        s = line.strip()
+        if not s:
+            cleaned.append("")
+            continue
+        if COMMAND_LINE_RE.match(s):
+            continue
+        cleaned.append(line)
+
+    merged = "\n".join(cleaned)
+    merged = re.sub(r"\n{3,}", "\n\n", merged).strip()
+    return merged
+
+
+def heuristic_denoise(text: str) -> str:
+    out = text
+    for pattern in NOISE_PATTERNS:
+        out = re.sub(pattern, " ", out, flags=re.I)
+    out = re.sub(r"\s+", " ", out).strip()
+    out = out.strip("，。！？,.!?;；")
+    return out
+
+
+def denoise_prompt(raw_prompt: str) -> str:
+    payload = {
+        "model": DENOISE_MODEL,
+        "prompt": raw_prompt,
+        "system": DENOISE_SYSTEM_PROMPT,
+        "stream": False,
+        "options": {"temperature": 0, "num_predict": 180},
+    }
+    result = post_json(OLLAMA_GENERATE_URL, payload, timeout=OLLAMA_TIMEOUT)
+    if not result:
+        fallback = heuristic_denoise(raw_prompt)
+        return fallback if fallback else raw_prompt.strip()
+
+    denoised = str(result.get("response", "")).strip()
+    if not denoised:
+        fallback = heuristic_denoise(raw_prompt)
+        return fallback if fallback else raw_prompt.strip()
+
+    cleaned = heuristic_denoise(denoised)
+    return cleaned if cleaned else denoised
+
+
+def write_temp_markdown(query: str, rows: list[dict]) -> Path:
+    TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    digest = hashlib.sha1(f"{query}-{ts}-{os.getpid()}".encode("utf-8")).hexdigest()[:8]
+    out_path = TEMP_ROOT / f"ctx_{ts}_{digest}.md"
+
+    lines = [
+        "# Retrieved Context",
+        "",
+        f"- generated_at: {datetime.now().isoformat()}",
+        f"- source_dir: {CONTEXTS_DIR}",
+        "",
+    ]
+
+    if not rows:
+        lines.extend(["## Result", "", "No related context found.", ""])
+    else:
+        for idx, row in enumerate(rows, start=1):
+            lines.extend(
+                [
+                    f"## Source {idx}: {row['path'].name}",
+                    f"- score: {row['score']:.4f}",
+                    "",
+                    row["cleaned_text"] or "(empty after cleanup)",
+                    "",
+                ]
+            )
+
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return out_path
+
+
+def apply_placeholder(text: str, context_path: str) -> tuple[str, bool]:
+    if PLACEHOLDER and PLACEHOLDER in text:
+        return text.replace(PLACEHOLDER, context_path), True
+    return text, False
+
+
+def main() -> None:
     raw = sys.stdin.read()
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
         sys.exit(0)
 
-    prompt = data.get("prompt", "")
+    prompt = str(data.get("prompt", "")).strip()
     if not prompt:
         sys.exit(0)
 
-    debug(f"prompt length={len(prompt)}, first 80 chars: {prompt[:80]!r}")
+    debug(f"received prompt, len={len(prompt)}")
+    retrieved = semantic_retrieve(prompt)
+    for row in retrieved:
+        row["cleaned_text"] = strip_commands_and_code(row["text"])
 
-    # Step 1: 分类
-    t0 = time.time()
-    query, ctx_names = regex_match(prompt)
-    if query or ctx_names:
-        debug(f"regex hit in {time.time()-t0:.3f}s -> query={query!r}, ctx={ctx_names}")
-    else:
-        debug("regex miss, falling back to Ollama")
-        t1 = time.time()
-        query, ctx_names = ollama_classify(prompt)
-        debug(f"ollama classified in {time.time()-t1:.3f}s -> query={query!r}, ctx={ctx_names}")
+    temp_md = write_temp_markdown(prompt, retrieved)
+    denoised = denoise_prompt(prompt)
+    denoised_with_path, replaced = apply_placeholder(denoised, str(temp_md))
 
-    # Step 2: 收集上下文
-    parts = []
-
-    # 上下文片段
-    if ctx_names:
-        ctx_text = load_contexts(ctx_names)
-        if ctx_text:
-            parts.append(ctx_text)
-
-    # MCP 工具
-    if query:
-        tools = discover_tools(query)
-        tools_text = format_tools_context(tools) if tools else ""
-        if tools_text:
-            parts.append(tools_text)
-
-    # Step 3: 输出
-    if not parts:
-        sys.exit(0)
+    source_names = ", ".join(r["path"].name for r in retrieved) if retrieved else "none"
+    additional_context = "\n".join(
+        [
+            "[Router Output]",
+            f"context_markdown_path: {temp_md}",
+            f"retrieved_sources: {source_names}",
+            "commands_and_code_removed: true",
+            f"placeholder: {PLACEHOLDER}",
+            f"placeholder_replaced: {'true' if replaced else 'false'}",
+            "",
+            "[Denoised Prompt]",
+            denoised_with_path,
+            "",
+            "如果用户原话里出现占位符，请替换为 context_markdown_path 后再继续推理。",
+            "如果需要上下文内容，先用 Read 工具读取该 markdown 文件。",
+        ]
+    )
 
     output = {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
-            "additionalContext": "\n\n".join(parts),
+            "additionalContext": additional_context,
         }
     }
-    json.dump(output, sys.stdout)
+    json.dump(output, sys.stdout, ensure_ascii=False)
     sys.exit(0)
 
 
